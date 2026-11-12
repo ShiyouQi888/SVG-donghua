@@ -88,9 +88,136 @@
 }
 
 .stage-resize-handle {
-  fill: var(--color-primary);
+  fill: var(--color-fg);
+  stroke: var(--color-primary);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-selection-outline-outer {
+  fill: none;
+  stroke: var(--color-bg);
+  stroke-width: 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-selection-outline-inner {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: 1.75;
+  stroke-dasharray: 6 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-drawing-preview,
+.stage-pen-preview {
+  pointer-events: none;
+}
+
+.stage-pen-preview-line {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-pen-handle-line,
+.stage-motion-handle-line {
+  stroke: var(--color-key);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-pen-anchor {
+  fill: var(--color-fg);
+  stroke: var(--color-primary);
+  stroke-width: 2;
+  cursor: crosshair;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-motion-handle {
+  fill: var(--color-key);
   stroke: var(--color-surface);
-  stroke-width: 1.5;
+  stroke-width: 2.5;
+  cursor: grab;
+  pointer-events: all;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.85));
+}
+
+.stage-motion-handle:active {
+  cursor: grabbing;
+}
+
+.stage-path-edit-overlay {
+  pointer-events: none;
+}
+
+.stage-path-hit-area {
+  pointer-events: stroke;
+  stroke: transparent;
+  stroke-width: 14px;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+}
+
+.stage-path-anchor,
+.stage-path-handle {
+  pointer-events: all;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-path-anchor {
+  fill: var(--color-fg);
+  stroke: var(--color-primary);
+  stroke-width: 2;
+  cursor: move;
+}
+
+.stage-path-handle {
+  fill: var(--color-key);
+  stroke: var(--color-surface);
+  stroke-width: 2.5;
+  cursor: crosshair;
+  filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.85));
+}
+
+.timeline-layer-row.is-active {
+  background: color-mix(in oklab, var(--color-primary) 18%, var(--color-surface));
+}
+
+.timeline-layer-label.is-active {
+  background: color-mix(in oklab, var(--color-primary) 24%, var(--color-surface));
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.stage-motion-path-line {
+  fill: none;
+  stroke: var(--color-key);
+  stroke-width: 1.5px;
+  stroke-dasharray: 6 5;
+  opacity: 0.82;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-motion-path-key {
+  fill: var(--color-surface);
+  stroke: var(--color-key);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-motion-path-key.is-first {
+  fill: var(--color-key);
+}
+
+.stage-motion-path-current {
+  fill: var(--color-primary);
+  stroke: var(--color-fg);
+  stroke-width: 2px;
   vector-effect: non-scaling-stroke;
 }
 
@@ -187,11 +314,36 @@
   background: var(--color-key);
   transform: rotate(45deg);
   z-index: 2;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
 }
 
 .tl-key.is-selected {
-  background: var(--color-fg);
-  border-color: var(--color-fg);
+  outline: 2px solid var(--color-fg);
+  outline-offset: 2px;
+}
+
+.tl-key.interp-ease {
+  transform: none;
+  border-color: #76e0c5;
+  border-radius: 50%;
+  background: #33bd9d;
+}
+
+.tl-key.interp-bezier {
+  transform: none;
+  border-color: #d0b2ff;
+  background: #9360e8;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+}
+
+.tl-key.interp-hold {
+  transform: none;
+  border-color: #ffbd82;
+  border-radius: 1px;
+  background: #f0884d;
 }
 
 .timeline-range {
@@ -249,8 +401,16 @@
 }
 
 .timeline-scroll {
+  -webkit-user-select: none;
+  user-select: none;
   scrollbar-color: color-mix(in oklab, var(--color-muted) 45%, transparent) transparent;
   scrollbar-width: thin;
+}
+
+.timeline-scroll input,
+.timeline-scroll textarea {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .timeline-scroll::-webkit-scrollbar {

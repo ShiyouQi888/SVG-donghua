@@ -6,12 +6,19 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
+  ArrowDown,
+  ArrowDownToLine,
+  ArrowUp,
+  ArrowUpToLine,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   ClipboardPaste,
   Copy,
   Eye,
   EyeOff,
+  LockKeyhole,
+  LockKeyholeOpen,
   Magnet,
   Maximize2,
   Pause,
@@ -19,20 +26,23 @@ import {
   ScanLine,
   Spline,
   Trash2,
+  Timer,
   Waves,
 } from "lucide-react";
 import {
   DEFAULT_BEZIER,
   FPS,
   PROP_LABEL,
+  PROPS,
   STYLE_PROPS,
-  TRANSFORM_PROPS,
   colorToNumber,
   displayed,
   fmtTime,
   keyNear,
   numberToColor,
   snapTime,
+  type Keyframe,
+  type Layer,
   type Interp,
   type PropKey,
 } from "@/lib/animator/model";
@@ -48,12 +58,27 @@ const LABEL_W = 280;
 const FIT_MODE_KEY = "kairo-timeline-zoom-mode";
 const HEIGHT_KEY = "kairo-timeline-height";
 const MIN_TIMELINE_HEIGHT = 160;
+type TimelineProp = PropKey | "position" | "scaleVector";
+const TIMELINE_TRANSFORM_PROPS: TimelineProp[] = [
+  "opacity",
+  "position",
+  "rotate",
+  "scaleVector",
+];
 const INTERPOLATION_MENU: { value: Interp; label: string }[] = [
   { value: "linear", label: "线性" },
   { value: "ease", label: "缓入缓出" },
   { value: "bezier", label: "贝塞尔曲线" },
   { value: "hold", label: "定格" },
 ];
+
+function combinedInterpolation(primary?: Keyframe, secondary?: Keyframe): Interp {
+  const values = [primary?.interp, secondary?.interp];
+  if (values.includes("bezier")) return "bezier";
+  if (values.includes("ease")) return "ease";
+  if (values.includes("hold")) return "hold";
+  return "linear";
+}
 
 function clampTimelineHeight(value: number): number {
   const maxHeight = Math.max(
@@ -143,6 +168,8 @@ export function Timeline() {
   const selectKeys = useDoc((s) => s.selectKeys);
   const setSelectedInterpolation = useDoc((s) => s.setSelectedInterpolation);
   const deleteSelectedKey = useDoc((s) => s.deleteSelectedKey);
+  const moveLayer = useDoc((s) => s.moveLayer);
+  const selectedLayerIndex = selectedId ? layers.findIndex((layer) => layer.id === selectedId) : -1;
 
   const copySelectedKeys = useCallback(() => {
     const state = useDoc.getState();
@@ -165,6 +192,8 @@ export function Timeline() {
       v: key.v,
       interp: key.interp,
       bezier: { ...(key.bezier ?? DEFAULT_BEZIER) },
+      ...(key.motionIn ? { motionIn: { ...key.motionIn } } : {}),
+      ...(key.motionOut ? { motionOut: { ...key.motionOut } } : {}),
     }));
     return found.length;
   }, []);
@@ -433,6 +462,7 @@ export function Timeline() {
           if (target.closest("[data-key]") || target.closest("[data-label]")) return;
           if (target.closest("[data-track-area]")) {
             if (event.button !== 0 || !scrollRef.current) return;
+            event.preventDefault();
             const rect = scrollRef.current.getBoundingClientRect();
             const left = event.clientX - rect.left + scrollRef.current.scrollLeft;
             const top = event.clientY - rect.top + scrollRef.current.scrollTop;
@@ -450,6 +480,8 @@ export function Timeline() {
             scrollRef.current.setPointerCapture(event.pointerId);
             return;
           }
+          if (event.button !== 0) return;
+          event.preventDefault();
           scrub.current = true;
           setTime(timeFromClient(event.clientX));
           (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -497,12 +529,23 @@ export function Timeline() {
                     rect.top <= box.bottom
                   );
                 })
-                .map((key) => ({
-                  layerId: key.dataset.layerId ?? "",
-                  prop: key.dataset.prop as PropKey,
-                  id: key.dataset.keyId ?? "",
-                }))
-                .filter((key) => key.layerId && key.id);
+                .flatMap((key): SelectedKey[] => {
+                  const layerId = key.dataset.layerId ?? "";
+                  if (key.dataset.keyPair === "true") {
+                    return [
+                      ...(key.dataset.pairPrimaryId
+                        ? [{ layerId, prop: key.dataset.prop as PropKey, id: key.dataset.pairPrimaryId }]
+                        : []),
+                      ...(key.dataset.pairSecondaryId
+                        ? [{ layerId, prop: key.dataset.pairSecondaryProp as PropKey, id: key.dataset.pairSecondaryId }]
+                        : []),
+                    ];
+                  }
+                  const id = key.dataset.keyId ?? "";
+                  return layerId && id
+                    ? [{ layerId, prop: key.dataset.prop as PropKey, id }]
+                    : [];
+                });
               const combined = start.additive
                 ? [
                     ...new Map(
@@ -530,10 +573,52 @@ export function Timeline() {
           <div className="sticky top-0 z-20 flex h-7 border-b border-border bg-surface-2">
             <div
               data-label
-              className="sticky left-0 z-30 flex shrink-0 items-center border-r border-border bg-surface-2 px-2 text-xs text-muted"
+              className="sticky left-0 z-30 flex shrink-0 items-center gap-1 border-r border-border bg-surface-2 px-2 text-xs text-muted"
               style={{ width: labelWidth }}
             >
-              图层 / 变换
+              <span className="mr-auto whitespace-nowrap">图层 / 变换</span>
+              <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1">
+                <button
+                  type="button"
+                  aria-label="置于最前"
+                  title="置于最前"
+                  disabled={!selectedId || selectedLayerIndex === layers.length - 1}
+                  onClick={() => selectedId && moveLayer(selectedId, "front")}
+                  className="grid size-6 place-items-center rounded text-muted hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ArrowUpToLine className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="上移一层"
+                  title="上移一层"
+                  disabled={!selectedId || selectedLayerIndex === layers.length - 1}
+                  onClick={() => selectedId && moveLayer(selectedId, "forward")}
+                  className="grid size-6 place-items-center rounded text-muted hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ArrowUp className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="下移一层"
+                  title="下移一层"
+                  disabled={!selectedId || selectedLayerIndex === 0}
+                  onClick={() => selectedId && moveLayer(selectedId, "backward")}
+                  className="grid size-6 place-items-center rounded text-muted hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ArrowDown className="size-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="置于最后"
+                  title="置于最后"
+                  disabled={!selectedId || selectedLayerIndex === 0}
+                  onClick={() => selectedId && moveLayer(selectedId, "back")}
+                  className="grid size-6 place-items-center rounded text-muted hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ArrowDownToLine className="size-3.5" />
+                </button>
+              </div>
             </div>
             <Ruler duration={duration} px={timelinePx} width={width} />
           </div>
@@ -544,28 +629,35 @@ export function Timeline() {
             </p>
           )}
 
-          {layers.map((layer) => {
+          {[...layers].reverse().map((layer) => {
             const open = expanded[layer.id] !== false;
             const transformKey = `${layer.id}:transform`;
             const transformOpen = expanded[transformKey] !== false;
             const appearanceKey = `${layer.id}:appearance`;
             const appearanceOpen = expanded[appearanceKey] !== false;
-            const groups = [
-              { key: transformKey, label: "变换", props: TRANSFORM_PROPS, open: transformOpen },
+            const groups: {
+              key: string;
+              label: string;
+              props: readonly TimelineProp[];
+              open: boolean;
+            }[] = [
+              {
+                key: transformKey,
+                label: "变换",
+                props: TIMELINE_TRANSFORM_PROPS,
+                open: transformOpen,
+              },
               { key: appearanceKey, label: "外观", props: STYLE_PROPS, open: appearanceOpen },
             ];
-            const keyCount = [...TRANSFORM_PROPS, ...STYLE_PROPS].reduce(
-              (n, prop) => n + layer.tracks[prop].length,
-              0,
-            );
+            const keyCount = PROPS.reduce((n, prop) => n + layer.tracks[prop].length, 0);
             return (
               <div key={layer.id}>
                 <div
-                  className={`flex h-8 border-b border-border ${layer.id === selectedId ? "bg-primary/10" : ""}`}
+                  className={`timeline-layer-row flex h-8 border-b border-border ${layer.id === selectedId ? "is-active" : ""}`}
                 >
                   <div
                     data-label
-                    className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface px-1"
+                    className={`timeline-layer-label sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface px-1 ${layer.id === selectedId ? "is-active" : ""}`}
                     style={{ width: labelWidth }}
                   >
                     <button
@@ -592,13 +684,11 @@ export function Timeline() {
                         <EyeOff className="size-3.5" />
                       )}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => selectLayer(layer.id)}
-                      className="min-w-0 flex-1 truncate text-left text-xs font-medium"
-                    >
-                      {layer.name}
-                    </button>
+                    <TimelineLayerName
+                      layer={layer}
+                      selected={layer.id === selectedId}
+                      onSelect={() => selectLayer(layer.id)}
+                    />
                     {keyCount > 0 && (
                       <span className="mr-1 font-mono text-xs text-key">{keyCount}</span>
                     )}
@@ -634,33 +724,52 @@ export function Timeline() {
                         <div className="h-full" style={{ width }} />
                       </div>
                       {group.open &&
-                        group.props.map((prop) => (
-                          <PropTrack
-                            key={prop}
-                            layerId={layer.id}
-                            prop={prop}
-                            width={width}
-                            px={timelinePx}
-                            labelWidth={labelWidth}
-                            selected={selectedKeys
-                              .filter((key) => key.layerId === layer.id && key.prop === prop)
-                              .map((key) => key.id)}
-                            onSelect={(keyId, extend) =>
-                              selectKey({ layerId: layer.id, prop, id: keyId }, extend)
-                            }
-                            onContextMenu={(key, x, y) => {
-                              const current = useDoc.getState().selectedKeys;
-                              const alreadySelected = current.some(
+                        group.props.map((prop) => {
+                          const onContextMenu = (keys: SelectedKey[], x: number, y: number) => {
+                            const current = useDoc.getState().selectedKeys;
+                            const alreadySelected = keys.every((key) =>
+                              current.some(
                                 (selected) =>
                                   selected.layerId === key.layerId &&
                                   selected.prop === key.prop &&
                                   selected.id === key.id,
-                              );
-                              if (!alreadySelected) useDoc.getState().selectKey(key);
-                              setKeyMenu({ x, y });
-                            }}
-                          />
-                        ))}
+                              ),
+                            );
+                            if (!alreadySelected) useDoc.getState().selectKeys(keys);
+                            setKeyMenu({ x, y });
+                          };
+                          if (prop === "position" || prop === "scaleVector") {
+                            return (
+                              <VectorTrack
+                                key={prop}
+                                layerId={layer.id}
+                                vector={prop}
+                                width={width}
+                                px={timelinePx}
+                                labelWidth={labelWidth}
+                                selected={selectedKeys.filter((key) => key.layerId === layer.id)}
+                                onContextMenu={onContextMenu}
+                              />
+                            );
+                          }
+                          return (
+                            <PropTrack
+                              key={prop}
+                              layerId={layer.id}
+                              prop={prop}
+                              width={width}
+                              px={timelinePx}
+                              labelWidth={labelWidth}
+                              selected={selectedKeys
+                                .filter((key) => key.layerId === layer.id && key.prop === prop)
+                                .map((key) => key.id)}
+                              onSelect={(keyId, extend) =>
+                                selectKey({ layerId: layer.id, prop, id: keyId }, extend)
+                              }
+                              onContextMenu={onContextMenu}
+                            />
+                          );
+                        })}
                     </div>
                   ))}
               </div>
@@ -775,6 +884,78 @@ export function Timeline() {
   );
 }
 
+function TimelineLayerName({
+  layer,
+  selected,
+  onSelect,
+}: {
+  layer: Layer;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(layer.name);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const finished = useRef(false);
+  const rename = useDoc((state) => state.rename);
+
+  useEffect(() => {
+    if (editing) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editing]);
+
+  const finish = (save: boolean) => {
+    if (finished.current) return;
+    finished.current = true;
+    if (save) rename(layer.id, draft.trim() || layer.name);
+    else setDraft(layer.name);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        aria-label="图层名称"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => finish(true)}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === "Enter") {
+            event.preventDefault();
+            finish(true);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            finish(false);
+          }
+        }}
+        className="min-w-0 flex-1 rounded border border-primary/60 bg-bg px-1 text-left text-xs text-fg outline-none"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      title="单击选择 · 双击重命名"
+      onClick={onSelect}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        finished.current = false;
+        setDraft(layer.name);
+        setEditing(true);
+      }}
+      className={`min-w-0 flex-1 truncate text-left text-xs font-medium ${selected ? "text-primary" : "text-fg"}`}
+    >
+      {layer.name}
+    </button>
+  );
+}
+
 function Ruler({ duration, px, width }: { duration: number; px: number; width: number }) {
   const ticks: number[] = [];
   const step = px >= 140 ? 0.5 : 1;
@@ -812,7 +993,7 @@ function PropTrack({
   labelWidth: number;
   selected: string[];
   onSelect: (id: string, extend: boolean) => void;
-  onContextMenu: (key: SelectedKey, x: number, y: number) => void;
+  onContextMenu: (keys: SelectedKey[], x: number, y: number) => void;
 }) {
   const track = useDoc((s) => s.layers.find((l) => l.id === layerId)?.tracks[prop] ?? []);
   const time = useDoc((s) => s.time);
@@ -821,6 +1002,8 @@ function PropTrack({
   const layer = useDoc((s) => s.layers.find((l) => l.id === layerId));
   const setDisplayed = useDoc((s) => s.setDisplayed);
   const moveKeys = useDoc((s) => s.moveKeys);
+  const beginUndoGroup = useDoc((s) => s.beginUndoGroup);
+  const endUndoGroup = useDoc((s) => s.endUndoGroup);
   const dragOrigin = useRef<{ startTime: number; keys: KeyframeMove[] } | null>(null);
   const armed = layer?.armed[prop];
   const live = keyNear(track, time);
@@ -877,12 +1060,12 @@ function PropTrack({
             data-prop={prop}
             aria-label={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t)}`}
             title={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t)} · ${kf.interp}`}
-            className={`tl-key ${selected.includes(kf.id) || live?.id === kf.id ? "is-selected" : ""}`}
+            className={`tl-key interp-${kf.interp} ${selected.includes(kf.id) || live?.id === kf.id ? "is-selected" : ""}`}
             style={{ left: kf.t * px }}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              onContextMenu({ layerId, prop, id: kf.id }, event.clientX, event.clientY);
+              onContextMenu([{ layerId, prop, id: kf.id }], event.clientX, event.clientY);
             }}
             onPointerDown={(event) => {
               event.stopPropagation();
@@ -904,6 +1087,7 @@ function PropTrack({
                 return origin ? [{ ...key, t: origin.t }] : [];
               });
               dragOrigin.current = { startTime: kf.t, keys };
+              beginUndoGroup();
               event.currentTarget.setPointerCapture(event.pointerId);
             }}
             onPointerMove={(event) => {
@@ -918,9 +1102,11 @@ function PropTrack({
             }}
             onPointerUp={() => {
               dragOrigin.current = null;
+              endUndoGroup();
             }}
             onPointerCancel={() => {
               dragOrigin.current = null;
+              endUndoGroup();
             }}
           />
         ))}
@@ -929,10 +1115,356 @@ function PropTrack({
   );
 }
 
+function VectorTrack({
+  layerId,
+  vector,
+  width,
+  px,
+  labelWidth,
+  selected,
+  onContextMenu,
+}: {
+  layerId: string;
+  vector: "position" | "scaleVector";
+  width: number;
+  px: number;
+  labelWidth: number;
+  selected: SelectedKey[];
+  onContextMenu: (keys: SelectedKey[], x: number, y: number) => void;
+}) {
+  const primary: PropKey = vector === "position" ? "x" : "scale";
+  const secondary: PropKey = vector === "position" ? "y" : "scaleY";
+  const title = vector === "position" ? "位置" : "缩放";
+  const layer = useDoc((state) => state.layers.find((item) => item.id === layerId));
+  const primaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[primary] ?? []);
+  const secondaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[secondary] ?? []);
+  const time = useDoc((state) => state.time);
+  const dragOrigin = useRef<{ startTime: number; keys: KeyframeMove[] } | null>(null);
+  const beginUndoGroup = useDoc((s) => s.beginUndoGroup);
+  const endUndoGroup = useDoc((s) => s.endUndoGroup);
+
+  const markers = new Map<number, { t: number; primary?: Keyframe; secondary?: Keyframe }>();
+  for (const key of primaryTrack) {
+    const frame = Math.round(key.t * FPS);
+    const marker = markers.get(frame) ?? { t: frame / FPS };
+    marker.primary = key;
+    markers.set(frame, marker);
+  }
+  for (const key of secondaryTrack) {
+    const frame = Math.round(key.t * FPS);
+    const marker = markers.get(frame) ?? { t: frame / FPS };
+    marker.secondary = key;
+    markers.set(frame, marker);
+  }
+
+  const changeValue = (prop: PropKey, value: number) => {
+    const state = useDoc.getState();
+    const current = state.layers.find((item) => item.id === layerId);
+    if (!current) return;
+    let nextPrimary = displayed(current, primary, state.time);
+    let nextSecondary = displayed(current, secondary, state.time);
+    if (prop === primary) nextPrimary = value;
+    else nextSecondary = value;
+    if (vector === "scaleVector" && current.scaleLinked !== false) {
+      if (prop === primary) {
+        const ratio = nextPrimary === 0 ? 1 : nextSecondary / nextPrimary;
+        nextSecondary = Math.min(10, Math.max(0.01, value * ratio));
+      } else {
+        const ratio = nextSecondary === 0 ? 1 : nextPrimary / nextSecondary;
+        nextPrimary = Math.min(10, Math.max(0.01, value * ratio));
+      }
+    }
+    const forceKey =
+      state.autoKey || current.armed[primary] || current.armed[secondary];
+    state.setDisplayed(layerId, primary, nextPrimary, forceKey);
+    state.setDisplayed(layerId, secondary, nextSecondary, forceKey);
+  };
+
+  const addPairKey = (targetTime: number) => {
+    const state = useDoc.getState();
+    state.setTime(targetTime);
+    const current = state.layers.find((item) => item.id === layerId);
+    if (!current) return;
+    state.setDisplayed(layerId, primary, displayed(current, primary, targetTime), true);
+    state.setDisplayed(layerId, secondary, displayed(current, secondary, targetTime), true);
+  };
+
+  return (
+    <div className="flex h-8 border-b border-border/70">
+      <div
+        data-label
+        className="sticky left-0 z-10 flex shrink-0 items-center gap-0.5 border-r border-border bg-surface px-1"
+        style={{ width: labelWidth }}
+      >
+        <span className={`w-8 shrink-0 text-[10px] ${layer?.armed[primary] || layer?.armed[secondary] ? "text-fg" : "text-muted"}`}>
+          {title}
+        </span>
+        <VectorKeyNav layerId={layerId} primary={primary} secondary={secondary} title={title} />
+        <div className="ml-auto flex min-w-0 items-center gap-0.5">
+          <AxisScrub axis="X" prop={primary} layer={layer} time={time} onChange={changeValue} />
+          {vector === "scaleVector" && (
+            <button
+              type="button"
+              aria-label={layer?.scaleLinked !== false ? "解锁缩放比例" : "锁定缩放比例"}
+              aria-pressed={layer?.scaleLinked !== false}
+              title={layer?.scaleLinked !== false ? "缩放比例已锁定，点击解锁" : "缩放比例未锁定，点击锁定"}
+              onClick={() => useDoc.getState().toggleScaleLinked(layerId)}
+              className={`grid size-5 shrink-0 place-items-center rounded ${layer?.scaleLinked !== false ? "text-primary" : "text-muted hover:text-fg"}`}
+            >
+              {layer?.scaleLinked !== false ? <LockKeyhole className="size-3" /> : <LockKeyholeOpen className="size-3" />}
+            </button>
+          )}
+          <AxisScrub axis="Y" prop={secondary} layer={layer} time={time} onChange={changeValue} />
+        </div>
+      </div>
+      <div
+        data-track-area
+        className="relative h-full"
+        style={{ width }}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          const scroller = event.currentTarget.closest(".overflow-auto") as HTMLElement | null;
+          if (!scroller) return;
+          const rect = scroller.getBoundingClientRect();
+          const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
+          const targetTime = snapTime(x / px, useDoc.getState().duration);
+          const state = useDoc.getState();
+          const current = state.layers.find((item) => item.id === layerId);
+          if (!current) return;
+          state.setTime(targetTime);
+          const a = keyNear(current.tracks[primary], targetTime);
+          const b = keyNear(current.tracks[secondary], targetTime);
+          if (a && b) {
+            state.toggleKey(layerId, primary);
+            state.toggleKey(layerId, secondary);
+          } else {
+            addPairKey(targetTime);
+          }
+        }}
+      >
+        {[...markers.values()].sort((a, b) => a.t - b.t).map((marker) => {
+          const markerKeys: SelectedKey[] = [
+            ...(marker.primary ? [{ layerId, prop: primary, id: marker.primary.id }] : []),
+            ...(marker.secondary ? [{ layerId, prop: secondary, id: marker.secondary.id }] : []),
+          ];
+          const active = markerKeys.some((key) =>
+            selected.some(
+              (item) => item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
+            ),
+          );
+          const markerValue = (prop: PropKey, key: Keyframe | undefined) => {
+            if (!layer) return 0;
+            if (!key) return displayed(layer, prop, marker.t);
+            if (vector === "position" && (prop === "x" || prop === "y")) {
+              return (prop === "x" ? layer.x : layer.y) + key.v;
+            }
+            return key.v;
+          };
+          const primaryValue = formatKeyValue(primary, markerValue(primary, marker.primary));
+          const secondaryValue = formatKeyValue(secondary, markerValue(secondary, marker.secondary));
+          const interpolation = combinedInterpolation(marker.primary, marker.secondary);
+          return (
+            <button
+              key={`${marker.t}:${marker.primary?.id ?? ""}:${marker.secondary?.id ?? ""}`}
+              type="button"
+              data-key
+              data-key-pair="true"
+              data-pair-primary-id={marker.primary?.id}
+              data-pair-secondary-id={marker.secondary?.id}
+              data-pair-secondary-prop={secondary}
+              data-key-id={marker.primary?.id ?? marker.secondary?.id}
+              data-layer-id={layerId}
+              data-prop={primary}
+              aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t)}`}
+              title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t)} · ${interpolation}`}
+              className={`tl-key interp-${interpolation} ${active ? "is-selected" : ""}`}
+              style={{ left: marker.t * px }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onContextMenu(markerKeys, event.clientX, event.clientY);
+              }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                if (event.button !== 0 || markerKeys.length === 0) return;
+                event.preventDefault();
+                const state = useDoc.getState();
+                const alreadySelected = markerKeys.every((key) =>
+                  state.selectedKeys.some(
+                    (item) => item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
+                  ),
+                );
+                if (event.shiftKey) {
+                  state.selectKeys([
+                    ...new Map(
+                      [...state.selectedKeys, ...markerKeys].map((key) => [
+                        `${key.layerId}:${key.prop}:${key.id}`,
+                        key,
+                      ]),
+                    ).values(),
+                  ]);
+                } else if (!alreadySelected) {
+                  state.selectKeys(markerKeys);
+                }
+                const selection = useDoc.getState().selectedKeys;
+                const keys = selection.flatMap((key) => {
+                  const currentLayer = state.layers.find((item) => item.id === key.layerId);
+                  const origin = currentLayer?.tracks[key.prop].find((item) => item.id === key.id);
+                  return origin ? [{ ...key, t: origin.t }] : [];
+                });
+                dragOrigin.current = { startTime: marker.t, keys };
+                beginUndoGroup();
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                const origin = dragOrigin.current;
+                const scroller = event.currentTarget.closest(".overflow-auto") as HTMLElement | null;
+                if (!scroller || !origin) return;
+                const rect = scroller.getBoundingClientRect();
+                const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
+                const targetTime = snapTime(x / px, useDoc.getState().duration);
+                useDoc.getState().moveKeys(origin.keys, targetTime - origin.startTime);
+              }}
+              onPointerUp={() => {
+                dragOrigin.current = null;
+                endUndoGroup();
+              }}
+              onPointerCancel={() => {
+                dragOrigin.current = null;
+                endUndoGroup();
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function AxisScrub({
+  axis,
+  prop,
+  layer,
+  time,
+  onChange,
+}: {
+  axis: "X" | "Y";
+  prop: PropKey;
+  layer: Layer | undefined;
+  time: number;
+  onChange: (prop: PropKey, value: number) => void;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-0.5">
+      <span className="text-[9px] text-muted">{axis}</span>
+      <NumericScrub
+        prop={prop}
+        value={layer ? displayed(layer, prop, time) : 0}
+        onChange={(value) => onChange(prop, value)}
+        className="timeline-scrub-value !ml-0 w-[2.65rem] px-0.5 text-[9px]"
+      />
+    </div>
+  );
+}
+
+function VectorKeyNav({
+  layerId,
+  primary,
+  secondary,
+  title,
+}: {
+  layerId: string;
+  primary: PropKey;
+  secondary: PropKey;
+  title: string;
+}) {
+  const time = useDoc((state) => state.time);
+  const layer = useDoc((state) => state.layers.find((item) => item.id === layerId));
+  const armed = Boolean(layer?.armed[primary] || layer?.armed[secondary]);
+  const hitA = layer ? keyNear(layer.tracks[primary], time) : undefined;
+  const hitB = layer ? keyNear(layer.tracks[secondary], time) : undefined;
+  const hasKey = Boolean(hitA || hitB);
+
+  const toggleArmed = () => {
+    const state = useDoc.getState();
+    const current = state.layers.find((item) => item.id === layerId);
+    if (!current) return;
+    const next = !(current.armed[primary] || current.armed[secondary]);
+    if (current.armed[primary] !== next) state.toggleArm(layerId, primary);
+    if (current.armed[secondary] !== next) state.toggleArm(layerId, secondary);
+  };
+
+  const step = (direction: -1 | 1) => {
+    const state = useDoc.getState();
+    const current = state.layers.find((item) => item.id === layerId);
+    if (!current) return;
+    const times = [...new Set([...current.tracks[primary], ...current.tracks[secondary]].map((key) => key.t))].sort((a, b) => a - b);
+    const target = direction < 0
+      ? [...times].reverse().find((keyTime) => keyTime < state.time - 0.5 / FPS)
+      : times.find((keyTime) => keyTime > state.time + 0.5 / FPS);
+    if (target === undefined) return;
+    state.setTime(target);
+    const atTarget: SelectedKey[] = [
+      ...(keyNear(current.tracks[primary], target)
+        ? [{ layerId, prop: primary, id: keyNear(current.tracks[primary], target)!.id }]
+        : []),
+      ...(keyNear(current.tracks[secondary], target)
+        ? [{ layerId, prop: secondary, id: keyNear(current.tracks[secondary], target)!.id }]
+        : []),
+    ];
+    state.selectKeys(atTarget);
+  };
+
+  const togglePair = () => {
+    const state = useDoc.getState();
+    const current = state.layers.find((item) => item.id === layerId);
+    if (!current) return;
+    if (hitA && hitB) {
+      state.toggleKey(layerId, primary);
+      state.toggleKey(layerId, secondary);
+      return;
+    }
+    state.setDisplayed(layerId, primary, displayed(current, primary, time), true);
+    state.setDisplayed(layerId, secondary, displayed(current, secondary, time), true);
+  };
+
+  return (
+    <div className="flex shrink-0 items-center gap-0">
+      <button
+        type="button"
+        title={armed ? `关闭${title}关键帧` : `打开${title}关键帧`}
+        aria-pressed={armed}
+        onClick={toggleArmed}
+        className={`grid size-5 place-items-center rounded ${armed ? "text-key" : "text-muted hover:text-fg"}`}
+      >
+        <Timer className="size-3" />
+      </button>
+      <button type="button" aria-label="上一关键帧" onClick={() => step(-1)} className="grid size-5 place-items-center text-muted hover:text-fg">
+        <ChevronLeft className="size-3" />
+      </button>
+      <button
+        type="button"
+        aria-label={hasKey ? "删除关键帧" : "添加关键帧"}
+        title={hasKey ? `删除${title}关键帧` : `添加${title}关键帧`}
+        aria-pressed={hasKey}
+        onClick={togglePair}
+        className="grid size-5 place-items-center"
+      >
+        <span className={`k-diamond ${hitA || hitB ? "is-on" : ""}`} data-time={time} />
+      </button>
+      <button type="button" aria-label="下一关键帧" onClick={() => step(1)} className="grid size-5 place-items-center text-muted hover:text-fg">
+        <ChevronRight className="size-3" />
+      </button>
+    </div>
+  );
+}
+
 function formatKeyValue(prop: PropKey, value: number): string {
   if (prop === "fill" || prop === "stroke") return numberToColor(value);
   if (prop === "strokeWidth") return `${value.toFixed(1)}px`;
-  if (prop === "opacity" || prop === "scale") return `${(value * 100).toFixed(1)}%`;
+  if (prop === "opacity" || prop === "scale" || prop === "scaleY")
+    return `${(value * 100).toFixed(1)}%`;
   if (prop === "rotate") return `${value.toFixed(1)}°`;
   return value.toFixed(1);
 }
@@ -962,19 +1494,24 @@ function NumericScrub({
   prop,
   value,
   onChange,
+  className,
 }: {
   prop: PropKey;
   value: number;
   onChange: (value: number) => void;
+  className?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const start = useRef<{ x: number; value: number } | null>(null);
+  const scrubGrouped = useRef(false);
+  const beginUndoGroup = useDoc((s) => s.beginUndoGroup);
+  const endUndoGroup = useDoc((s) => s.endUndoGroup);
   const inputRef = useRef<HTMLInputElement>(null);
-  const percentValue = prop === "opacity" || prop === "scale";
+  const percentValue = prop === "opacity" || prop === "scale" || prop === "scaleY";
   const digits = percentValue ? 3 : 1;
   const step = percentValue ? 0.001 : 0.1;
   const shown =
-    prop === "opacity" || prop === "scale"
+    prop === "opacity" || prop === "scale" || prop === "scaleY"
       ? `${(value * 100).toFixed(1)}%`
       : prop === "rotate"
         ? `${value.toFixed(1)}°`
@@ -992,14 +1529,18 @@ function NumericScrub({
     if (!start.current) return;
     const pixels = event.clientX - start.current.x;
     const sensitivity =
-      prop === "opacity" || prop === "scale" ? 0.0025 : prop === "rotate" ? 0.5 : 1 / 3;
+      prop === "opacity" || prop === "scale" || prop === "scaleY"
+        ? 0.0025
+        : prop === "rotate"
+          ? 0.5
+          : 1 / 3;
     const modifier = event.shiftKey ? 0.1 : event.altKey ? 10 : 1;
     const raw = start.current.value + pixels * sensitivity * modifier;
     const rounded = Number((Math.round(raw / step) * step).toFixed(digits));
     const next =
       prop === "opacity"
         ? Math.min(1, Math.max(0, rounded))
-        : prop === "scale"
+        : prop === "scale" || prop === "scaleY"
           ? Math.min(10, Math.max(0.01, rounded))
           : prop === "rotate"
             ? Math.min(3600, Math.max(-3600, rounded))
@@ -1021,7 +1562,19 @@ function NumericScrub({
           const next = Number(event.target.value) || 0;
           onChange(percentValue ? next / 100 : next);
         }}
-        onBlur={() => setEditing(false)}
+        onBlur={() => {
+          setEditing(false);
+          if (scrubGrouped.current) {
+            scrubGrouped.current = false;
+            endUndoGroup();
+          }
+        }}
+        onFocus={() => {
+          if (!scrubGrouped.current) {
+            scrubGrouped.current = true;
+            beginUndoGroup();
+          }
+        }}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === "Escape") {
             event.preventDefault();
@@ -1039,11 +1592,13 @@ function NumericScrub({
       type="button"
       aria-label={`${PROP_LABEL[prop]} ${shown}，拖动微调，双击输入`}
       title="按住拖动调整 · Shift 精细调整 · Alt 加速 · 双击输入"
-      className="timeline-scrub-value ml-auto min-w-0 truncate rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums text-primary hover:bg-primary/10 focus-visible:outline-1 focus-visible:outline-primary"
+      className={className ?? "timeline-scrub-value ml-auto min-w-0 truncate rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums text-primary hover:bg-primary/10 focus-visible:outline-1 focus-visible:outline-primary"}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.stopPropagation();
         start.current = { x: event.clientX, value };
+        scrubGrouped.current = true;
+        beginUndoGroup();
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
       onPointerMove={(event) => {
@@ -1054,9 +1609,17 @@ function NumericScrub({
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
         start.current = null;
+        if (scrubGrouped.current) {
+          scrubGrouped.current = false;
+          endUndoGroup();
+        }
       }}
       onPointerCancel={() => {
         start.current = null;
+        if (scrubGrouped.current) {
+          scrubGrouped.current = false;
+          endUndoGroup();
+        }
       }}
       onDoubleClick={(event) => {
         event.stopPropagation();

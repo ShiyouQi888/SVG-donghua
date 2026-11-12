@@ -1,24 +1,30 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   Circle,
-  Download,
   Maximize2,
   MousePointer2,
+  PenTool,
+  Redo2,
   Square,
+  Star,
   Type,
+  Undo2,
   Upload,
 } from "lucide-react";
-import { buildExport, type Tool } from "@/lib/animator/model";
+import { type Tool } from "@/lib/animator/model";
 import { loadSnapshot, saveSnapshot, useDoc } from "@/lib/animator/store";
 import { Stage } from "./Stage";
 import { Timeline } from "./Timeline";
+import { ExportDialog } from "./ExportDialog";
 
 const TOOLS: { id: Tool; label: string; icon: typeof MousePointer2 }[] = [
   { id: "select", label: "选择", icon: MousePointer2 },
   { id: "rect", label: "矩形", icon: Square },
   { id: "circle", label: "圆形", icon: Circle },
   { id: "ellipse", label: "椭圆", icon: Circle },
+  { id: "star", label: "五角星", icon: Star },
   { id: "text", label: "文字", icon: Type },
+  { id: "pen", label: "钢笔", icon: PenTool },
 ];
 
 const CANVAS_PRESETS = [
@@ -31,10 +37,16 @@ const CANVAS_PRESETS = [
 ];
 
 export function Editor() {
+  const [exportOpen, setExportOpen] = useState(false);
   const tool = useDoc((s) => s.tool);
   const setTool = useDoc((s) => s.setTool);
   const resetDemo = useDoc((s) => s.resetDemo);
   const clearAll = useDoc((s) => s.clearAll);
+  const undo = useDoc((s) => s.undo);
+  const redo = useDoc((s) => s.redo);
+  const canUndo = useDoc((s) => s.undoCount > 0);
+  const canRedo = useDoc((s) => s.redoCount > 0);
+  const clearHistory = useDoc((s) => s.clearHistory);
   const replace = useDoc((s) => s.replace);
   const projectWidth = useDoc((s) => s.projectWidth);
   const projectHeight = useDoc((s) => s.projectHeight);
@@ -42,13 +54,14 @@ export function Editor() {
   const exportHeight = useDoc((s) => s.exportHeight);
   const setProjectSize = useDoc((s) => s.setProjectSize);
   const setExportSize = useDoc((s) => s.setExportSize);
-  const motionBlur = useDoc((s) => s.motionBlur);
-  const motionBlurStrength = useDoc((s) => s.motionBlurStrength);
 
   useEffect(() => {
     const saved = loadSnapshot();
-    if (saved) replace(saved);
-  }, [replace]);
+    if (saved) {
+      replace(saved);
+      clearHistory();
+    }
+  }, [clearHistory, replace]);
 
   useEffect(() => {
     let timer = 0;
@@ -97,9 +110,22 @@ export function Editor() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement).tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (event.target as HTMLElement).isContentEditable
+      )
+        return;
       const state = useDoc.getState();
-      if (event.code === "Space") {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) state.redo();
+        else state.undo();
+      } else if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        state.redo();
+      } else if (event.code === "Space") {
         event.preventDefault();
         state.togglePlay();
       } else if (event.key === "j" || event.key === "J") {
@@ -141,6 +167,13 @@ export function Editor() {
                 key={item.id}
                 type="button"
                 onClick={() => setTool(item.id)}
+                title={
+                  item.id === "pen"
+                    ? "点击添加锚点，拖动创建曲线手柄；双击或 Enter 完成，Esc 取消"
+                    : item.id === "select"
+                      ? "选择和移动图层"
+                      : "按住鼠标拖动绘制"
+                }
                 className={`flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs ${on ? "border-primary bg-primary/15 text-primary" : "border-border text-muted hover:text-fg"}`}
               >
                 <Icon className="size-3.5" />
@@ -150,6 +183,26 @@ export function Editor() {
           })}
         </div>
         <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1">
+          <button
+            type="button"
+            aria-label="撤销 Ctrl+Z"
+            title="撤销 Ctrl+Z"
+            disabled={!canUndo}
+            onClick={undo}
+            className="grid size-7 place-items-center rounded-md border border-border text-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            <Undo2 className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            aria-label="重做 Ctrl+Shift+Z"
+            title="重做 Ctrl+Shift+Z"
+            disabled={!canRedo}
+            onClick={redo}
+            className="grid size-7 place-items-center rounded-md border border-border text-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            <Redo2 className="size-3.5" />
+          </button>
           <button
             type="button"
             onClick={resetDemo}
@@ -234,39 +287,9 @@ export function Editor() {
           </details>
           <button
             type="button"
-            onClick={() => {
-              const {
-                layers,
-                duration,
-                projectWidth,
-                projectHeight,
-                exportWidth,
-                exportHeight,
-                motionBlur,
-                motionBlurStrength,
-              } = useDoc.getState();
-              const svg = buildExport(
-                layers,
-                duration,
-                {
-                  projectWidth,
-                  projectHeight,
-                  exportWidth,
-                  exportHeight,
-                },
-                { enabled: motionBlur, strength: motionBlurStrength },
-              );
-              const blob = new Blob([svg], { type: "image/svg+xml" });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = "kairo.svg";
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
+            onClick={() => setExportOpen(true)}
             className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-bg"
           >
-            <Download className="size-3.5" />
             导出
           </button>
         </div>
@@ -276,6 +299,7 @@ export function Editor() {
         <Stage />
       </div>
       <Timeline />
+      <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
     </div>
   );
 }

@@ -3,15 +3,20 @@ import {
   type Interp,
   type Keyframe,
   type Layer,
+  type MotionTangent,
   type PersistedDoc,
   type PropKey,
   type ShapeKind,
   type Tool,
+  type VectorPathPoint,
   FPS,
   PROPS,
   colorToNumber,
   defaultRest,
   DEFAULT_BEZIER,
+  DEMO_DURATION,
+  DEMO_HEIGHT,
+  DEMO_WIDTH,
   demoLayers,
   displayed,
   emptyArmed,
@@ -35,6 +40,8 @@ export type CopiedKeyframe = {
   v: number;
   interp: Interp;
   bezier: Keyframe["bezier"];
+  motionIn?: MotionTangent;
+  motionOut?: MotionTangent;
 };
 
 type DocState = {
@@ -58,6 +65,8 @@ type DocState = {
   expanded: Record<string, boolean>;
   layers: Layer[];
   seq: number;
+  undoCount: number;
+  redoCount: number;
 };
 
 type Actions = {
@@ -76,7 +85,16 @@ type Actions = {
   toggleAutoKey: () => void;
   selectLayer: (id: string | null) => void;
   toggleExpanded: (id: string) => void;
-  addShape: (kind: ShapeKind, x: number, y: number) => void;
+  addShape: (
+    kind: Exclude<ShapeKind, "path">,
+    x: number,
+    y: number,
+    bounds?: { x: number; y: number; w: number; h: number },
+  ) => void;
+  addPath: (points: VectorPathPoint[], closed?: boolean) => void;
+  setPathPoint: (id: string, index: number, point: VectorPathPoint) => void;
+  moveLayer: (id: string, direction: "forward" | "backward" | "front" | "back") => void;
+  setMotionHandle: (id: string, keyId: string, side: "in" | "out", offset: MotionTangent) => void;
   deleteLayer: (id: string) => void;
   toggleVisible: (id: string) => void;
   rename: (id: string, name: string) => void;
@@ -89,7 +107,8 @@ type Actions = {
       >
     >,
   ) => void;
-  setDisplayed: (id: string, prop: PropKey, absolute: number) => void;
+  setDisplayed: (id: string, prop: PropKey, absolute: number, forceKey?: boolean) => void;
+  toggleScaleLinked: (id: string) => void;
   moveBy: (
     id: string,
     dx: number,
@@ -106,12 +125,19 @@ type Actions = {
   moveKeys: (keys: KeyframeMove[], delta: number) => void;
   pasteKeyframes: (keys: CopiedKeyframe[], atTime: number) => void;
   setSelectedInterpolation: (interp: Interp) => void;
+  beginUndoGroup: () => void;
+  endUndoGroup: () => void;
+  undo: () => void;
+  redo: () => void;
+  clearHistory: () => void;
   moveKey: (id: string, prop: PropKey, keyId: string, t: number) => void;
   patchKey: (
     id: string,
     prop: PropKey,
     keyId: string,
-    patch: Partial<Pick<Keyframe, "v" | "t" | "interp" | "bezier">>,
+    patch: Partial<
+      Pick<Keyframe, "v" | "t" | "interp" | "bezier" | "motionIn" | "motionOut">
+    >,
   ) => void;
   deleteSelectedKey: () => void;
   easyEase: () => void;
@@ -120,6 +146,75 @@ type Actions = {
   replace: (doc: PersistedDoc) => void;
   snapshot: () => PersistedDoc;
 };
+
+type HistoryFrame = Pick<
+  DocState,
+  | "duration"
+  | "pxPerSec"
+  | "projectWidth"
+  | "projectHeight"
+  | "exportWidth"
+  | "exportHeight"
+  | "safeArea"
+  | "snapEnabled"
+  | "motionBlur"
+  | "motionBlurStrength"
+  | "time"
+  | "selectedId"
+  | "selectedKey"
+  | "selectedKeys"
+  | "expanded"
+  | "layers"
+  | "seq"
+>;
+
+const undoPast: HistoryFrame[] = [];
+const undoFuture: HistoryFrame[] = [];
+let undoGroupDepth = 0;
+let undoGroupRecorded = false;
+let applyingHistory = false;
+
+function historyFrame(state: DocState): HistoryFrame {
+  return {
+    duration: state.duration,
+    pxPerSec: state.pxPerSec,
+    projectWidth: state.projectWidth,
+    projectHeight: state.projectHeight,
+    exportWidth: state.exportWidth,
+    exportHeight: state.exportHeight,
+    safeArea: state.safeArea,
+    snapEnabled: state.snapEnabled,
+    motionBlur: state.motionBlur,
+    motionBlurStrength: state.motionBlurStrength,
+    time: state.time,
+    selectedId: state.selectedId,
+    selectedKey: state.selectedKey,
+    selectedKeys: state.selectedKeys,
+    expanded: state.expanded,
+    layers: state.layers,
+    seq: state.seq,
+  };
+}
+
+function hasDocumentChange(next: DocState, previous: DocState): boolean {
+  return (
+    next.duration !== previous.duration ||
+    next.projectWidth !== previous.projectWidth ||
+    next.projectHeight !== previous.projectHeight ||
+    next.exportWidth !== previous.exportWidth ||
+    next.exportHeight !== previous.exportHeight ||
+    next.safeArea !== previous.safeArea ||
+    next.snapEnabled !== previous.snapEnabled ||
+    next.motionBlur !== previous.motionBlur ||
+    next.motionBlurStrength !== previous.motionBlurStrength ||
+    next.layers !== previous.layers
+  );
+}
+
+function pushUndoFrame(frame: HistoryFrame) {
+  undoPast.push(frame);
+  if (undoPast.length > 100) undoPast.shift();
+}
 
 function sortTrack(track: Keyframe[]): Keyframe[] {
   return [...track].sort((a, b) => a.t - b.t);
@@ -162,10 +257,19 @@ function hydrateLayer(layer: Layer): Layer {
   if (layer.rest?.fill === undefined) rest.fill = colorToNumber(layer.fill);
   if (layer.rest?.stroke === undefined) rest.stroke = colorToNumber(layer.stroke);
   if (layer.rest?.strokeWidth === undefined) rest.strokeWidth = layer.strokeWidth;
+  const tracks = { ...emptyTracks(), ...(layer.tracks ?? {}) };
+  if (layer.scaleLinked === undefined && tracks.scale.length > 0 && tracks.scaleY.length === 0) {
+    tracks.scaleY = tracks.scale.map((key) => ({
+      ...key,
+      id: nid("ky"),
+      bezier: { ...key.bezier },
+    }));
+  }
   return {
     ...layer,
+    scaleLinked: layer.scaleLinked ?? true,
     armed: { ...emptyArmed(false), ...(layer.armed ?? {}) },
-    tracks: { ...emptyTracks(), ...(layer.tracks ?? {}) },
+    tracks,
     rest,
   };
 }
@@ -219,26 +323,28 @@ function writeProp(
 const initialLayers = demoLayers();
 
 export const useDoc = create<DocState & Actions>((set, get) => ({
-  duration: 3,
+  duration: DEMO_DURATION,
   time: 0,
-  playing: false,
+  playing: true,
   pxPerSec: 120,
-  projectWidth: 800,
-  projectHeight: 500,
-  exportWidth: 800,
-  exportHeight: 500,
+  projectWidth: DEMO_WIDTH,
+  projectHeight: DEMO_HEIGHT,
+  exportWidth: DEMO_WIDTH,
+  exportHeight: DEMO_HEIGHT,
   safeArea: false,
   snapEnabled: true,
   motionBlur: false,
   motionBlurStrength: 6,
-  selectedId: initialLayers[0]?.id ?? null,
+  selectedId: null,
   selectedKey: null,
   selectedKeys: [],
   tool: "select",
   autoKey: false,
-  expanded: Object.fromEntries(initialLayers.map((l) => [l.id, true])),
+  expanded: Object.fromEntries(initialLayers.map((l) => [l.id, false])),
   layers: initialLayers,
   seq: initialLayers.length,
+  undoCount: 0,
+  redoCount: 0,
 
   setTime: (t) => set({ time: Math.min(get().duration, Math.max(0, t)) }),
   togglePlay: () => {
@@ -294,9 +400,10 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       expanded: id ? { ...get().expanded, [id]: true } : get().expanded,
     }),
   toggleExpanded: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),
-  addShape: (kind, x, y) => {
+  addShape: (kind, x, y, bounds) => {
     const seq = get().seq + 1;
     const layer = makeLayer(kind, x, y, seq);
+    if (bounds) Object.assign(layer, bounds);
     set({
       seq,
       layers: [...get().layers, layer],
@@ -305,6 +412,95 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       tool: "select",
       selectedKey: null,
       selectedKeys: [],
+    });
+  },
+  addPath: (points, closed = false) => {
+    if (points.length < 2) return;
+    const xValues = points.flatMap((point) => [point.x, point.inX, point.outX]);
+    const yValues = points.flatMap((point) => [point.y, point.inY, point.outY]);
+    const left = Math.min(...xValues);
+    const right = Math.max(...xValues);
+    const top = Math.min(...yValues);
+    const bottom = Math.max(...yValues);
+    const width = Math.max(1, right - left);
+    const height = Math.max(1, bottom - top);
+    const seq = get().seq + 1;
+    const layer = makeLayer("path", left + width / 2, top + height / 2, seq);
+    layer.name = `钢笔路径 ${seq}`;
+    layer.x = left;
+    layer.y = top;
+    layer.w = width;
+    layer.h = height;
+    layer.path = points.map((point) => ({
+      x: (point.x - left) / width,
+      y: (point.y - top) / height,
+      inX: (point.inX - left) / width,
+      inY: (point.inY - top) / height,
+      outX: (point.outX - left) / width,
+      outY: (point.outY - top) / height,
+    }));
+    layer.closed = closed;
+    layer.fill = closed ? "#4c9fff" : "none";
+    layer.stroke = "#e7ebf2";
+    layer.strokeWidth = 2;
+    layer.rest = {
+      ...layer.rest,
+      fill: closed ? colorToNumber(layer.fill) : 0,
+      stroke: colorToNumber(layer.stroke),
+      strokeWidth: layer.strokeWidth,
+    };
+    set({
+      seq,
+      layers: [...get().layers, layer],
+      selectedId: layer.id,
+      expanded: { ...get().expanded, [layer.id]: true },
+      tool: "select",
+      selectedKey: null,
+      selectedKeys: [],
+    });
+  },
+  moveLayer: (id, direction) => {
+    const layers = [...get().layers];
+    const from = layers.findIndex((layer) => layer.id === id);
+    if (from < 0) return;
+    const to =
+      direction === "front"
+        ? layers.length - 1
+        : direction === "back"
+          ? 0
+          : Math.min(layers.length - 1, Math.max(0, from + (direction === "forward" ? 1 : -1)));
+    if (from === to) return;
+    const [layer] = layers.splice(from, 1);
+    layers.splice(to, 0, layer);
+    set({ layers });
+  },
+  setMotionHandle: (id, keyId, side, offset) => {
+    const field = side === "in" ? "motionIn" : "motionOut";
+    set({
+      layers: mapLayer(get().layers, id, (layer) => {
+        const xHasKey = layer.tracks.x.some((key) => key.id === keyId);
+        const prop: PropKey = xHasKey ? "x" : "y";
+        return {
+          ...layer,
+          tracks: {
+            ...layer.tracks,
+            [prop]: layer.tracks[prop].map((key) =>
+              key.id === keyId ? { ...key, [field]: { ...offset } } : key,
+            ),
+          },
+        };
+      }),
+    });
+  },
+  setPathPoint: (id, index, point) => {
+    set({
+      layers: mapLayer(get().layers, id, (layer) => {
+        if (!layer.path || !layer.path[index]) return layer;
+        const path = layer.path.map((existing, pointIndex) =>
+          pointIndex === index ? { ...point } : existing,
+        );
+        return { ...layer, path };
+      }),
     });
   },
   deleteLayer: (id) => {
@@ -329,17 +525,24 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         return next;
       }),
     }),
-  setDisplayed: (id, prop, absolute) => {
+  setDisplayed: (id, prop, absolute, forceKey = false) => {
     const { time, autoKey, duration } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
-        const written = writeProp(layer, prop, absolute, time, autoKey);
+        const written = writeProp(layer, prop, absolute, time, autoKey || forceKey);
         const tracks = { ...written.tracks };
         tracks[prop] = tracks[prop].map((k) => ({ ...k, t: Math.min(k.t, duration) }));
         return { ...written, tracks };
       }),
     });
   },
+  toggleScaleLinked: (id) =>
+    set({
+      layers: mapLayer(get().layers, id, (layer) => ({
+        ...layer,
+        scaleLinked: !(layer.scaleLinked ?? true),
+      })),
+    }),
   moveBy: (id, dx, dy, origin) => {
     const { time, autoKey } = get();
     set({
@@ -594,7 +797,15 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         const id = nid("k");
         tracks[item.prop] = sortTrack([
           ...tracks[item.prop].filter((key) => Math.abs(key.t - time) >= 0.5 / FPS),
-          { id, t: time, v: item.v, interp: item.interp, bezier: { ...item.bezier } },
+          {
+            id,
+            t: time,
+            v: item.v,
+            interp: item.interp,
+            bezier: { ...item.bezier },
+            ...(item.motionIn ? { motionIn: { ...item.motionIn } } : {}),
+            ...(item.motionOut ? { motionOut: { ...item.motionOut } } : {}),
+          },
         ]);
         armed[item.prop] = true;
         pasted.push({ layerId: layer.id, prop: item.prop, id });
@@ -637,6 +848,49 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       return changed ? { ...layer, tracks } : layer;
     });
     set({ layers });
+  },
+  beginUndoGroup: () => {
+    if (undoGroupDepth === 0) undoGroupRecorded = false;
+    undoGroupDepth += 1;
+  },
+  endUndoGroup: () => {
+    undoGroupDepth = Math.max(0, undoGroupDepth - 1);
+    if (undoGroupDepth === 0) undoGroupRecorded = false;
+  },
+  undo: () => {
+    undoGroupDepth = 0;
+    undoGroupRecorded = false;
+    const frame = undoPast.pop();
+    if (!frame) return;
+    undoFuture.push(historyFrame(get()));
+    applyingHistory = true;
+    set({
+      ...frame,
+      playing: false,
+    });
+    applyingHistory = false;
+    set({ undoCount: undoPast.length, redoCount: undoFuture.length });
+  },
+  redo: () => {
+    undoGroupDepth = 0;
+    undoGroupRecorded = false;
+    const frame = undoFuture.pop();
+    if (!frame) return;
+    pushUndoFrame(historyFrame(get()));
+    applyingHistory = true;
+    set({
+      ...frame,
+      playing: false,
+    });
+    applyingHistory = false;
+    set({ undoCount: undoPast.length, redoCount: undoFuture.length });
+  },
+  clearHistory: () => {
+    undoPast.length = 0;
+    undoFuture.length = 0;
+    undoGroupDepth = 0;
+    undoGroupRecorded = false;
+    set({ undoCount: 0, redoCount: 0 });
   },
   patchKey: (id, prop, keyId, patch) => {
     set({
@@ -717,22 +971,22 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const layers = demoLayers();
     set({
       layers,
-      duration: 3,
-      projectWidth: 800,
-      projectHeight: 500,
-      exportWidth: 800,
-      exportHeight: 500,
+      duration: DEMO_DURATION,
+      projectWidth: DEMO_WIDTH,
+      projectHeight: DEMO_HEIGHT,
+      exportWidth: DEMO_WIDTH,
+      exportHeight: DEMO_HEIGHT,
       safeArea: false,
       snapEnabled: true,
       motionBlur: false,
       motionBlurStrength: 6,
       time: 0,
-      playing: false,
-      selectedId: layers[0].id,
+      playing: true,
+      selectedId: null,
       selectedKey: null,
       selectedKeys: [],
-      expanded: Object.fromEntries(layers.map((l) => [l.id, true])),
-      seq: 3,
+      expanded: Object.fromEntries(layers.map((l) => [l.id, false])),
+      seq: layers.length,
       autoKey: false,
     });
   },
@@ -799,6 +1053,20 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     };
   },
 }));
+
+useDoc.subscribe((state, previous) => {
+  if (applyingHistory || !hasDocumentChange(state, previous)) return;
+  if (undoGroupDepth > 0) {
+    if (!undoGroupRecorded) {
+      pushUndoFrame(historyFrame(previous));
+      undoGroupRecorded = true;
+    }
+  } else {
+    pushUndoFrame(historyFrame(previous));
+  }
+  undoFuture.length = 0;
+  useDoc.setState({ undoCount: undoPast.length, redoCount: 0 });
+});
 
 const NEAR = 0.5 / FPS;
 
