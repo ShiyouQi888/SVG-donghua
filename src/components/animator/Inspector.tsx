@@ -34,7 +34,7 @@ export function Inspector() {
 
   if (!layer) {
     return (
-      <aside className="max-h-52 min-h-0 w-full shrink-0 overflow-auto border-t border-border bg-surface lg:max-h-none lg:w-72 lg:border-t-0 lg:border-l">
+      <aside className="app-scrollbar max-h-52 min-h-0 w-full shrink-0 overflow-auto border-t border-border bg-surface lg:max-h-none lg:w-72 lg:border-t-0 lg:border-l">
         <div className="p-4 text-sm text-muted">选中一个图层后，用秒表和菱形键给属性打 K。</div>
       </aside>
     );
@@ -46,7 +46,7 @@ export function Inspector() {
       : undefined;
 
   return (
-    <aside className="max-h-52 min-h-0 w-full shrink-0 overflow-auto border-t border-border bg-surface lg:max-h-none lg:w-72 lg:border-t-0 lg:border-l">
+    <aside className="app-scrollbar max-h-52 min-h-0 w-full shrink-0 overflow-auto border-t border-border bg-surface lg:max-h-none lg:w-72 lg:border-t-0 lg:border-l">
       <div className="space-y-4 p-3">
         <div>
           <label className="mb-1 block text-xs text-muted" htmlFor="layer-name">

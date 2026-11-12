@@ -99,6 +99,7 @@ type MarqueeState = {
 };
 
 type KeyframeMenuState = { x: number; y: number };
+type TimelineKeyDrag = { pointerId: number; startTime: number; keys: KeyframeMove[] };
 
 export function Timeline() {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -106,6 +107,7 @@ export function Timeline() {
   const marqueeStart = useRef<MarqueeState | null>(null);
   const resizeStart = useRef<{ y: number; height: number } | null>(null);
   const clipboard = useRef<CopiedKeyframe[]>([]);
+  const keyDrag = useRef<TimelineKeyDrag | null>(null);
   const [marquee, setMarquee] = useState<MarqueeState | null>(null);
   const [keyMenu, setKeyMenu] = useState<KeyframeMenuState | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -164,7 +166,6 @@ export function Timeline() {
   const selectLayer = useDoc((s) => s.selectLayer);
   const toggleExpanded = useDoc((s) => s.toggleExpanded);
   const toggleVisible = useDoc((s) => s.toggleVisible);
-  const selectKey = useDoc((s) => s.selectKey);
   const selectKeys = useDoc((s) => s.selectKeys);
   const setSelectedInterpolation = useDoc((s) => s.setSelectedInterpolation);
   const deleteSelectedKey = useDoc((s) => s.deleteSelectedKey);
@@ -268,6 +269,46 @@ export function Timeline() {
     const rect = el.getBoundingClientRect();
     const x = clientX - rect.left + el.scrollLeft - labelWidth;
     return snapTime(x / timelinePx, duration);
+  }
+
+  function beginKeyMove(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    startTime: number,
+    clickedKeys: SelectedKey[],
+  ) {
+    event.stopPropagation();
+    if (event.button !== 0 || clickedKeys.length === 0 || !scrollRef.current) return;
+    event.preventDefault();
+    const state = useDoc.getState();
+    const alreadySelected = clickedKeys.every((key) =>
+      state.selectedKeys.some(
+        (item) => item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
+      ),
+    );
+    if (event.shiftKey) {
+      state.selectKeys([
+        ...new Map(
+          [...state.selectedKeys, ...clickedKeys].map((key) => [
+            `${key.layerId}:${key.prop}:${key.id}`,
+            key,
+          ]),
+        ).values(),
+      ]);
+    } else if (!alreadySelected) {
+      state.selectKeys(clickedKeys);
+    }
+
+    const selected = useDoc.getState().selectedKeys;
+    const selection = selected.length > 0 ? selected : clickedKeys;
+    const keys = selection.flatMap((key) => {
+      const layer = state.layers.find((item) => item.id === key.layerId);
+      const origin = layer?.tracks[key.prop].find((item) => item.id === key.id);
+      return origin ? [{ ...key, t: origin.t }] : [];
+    });
+    if (keys.length === 0) return;
+    keyDrag.current = { pointerId: event.pointerId, startTime, keys };
+    useDoc.getState().beginUndoGroup();
+    scrollRef.current.setPointerCapture(event.pointerId);
   }
 
   return (
@@ -456,7 +497,7 @@ export function Timeline() {
 
       <div
         ref={scrollRef}
-        className="timeline-scroll relative min-h-0 flex-1 overflow-auto"
+        className="app-scrollbar timeline-scroll relative min-h-0 flex-1 overflow-auto"
         onPointerDown={(event) => {
           const target = event.target as HTMLElement;
           if (target.closest("[data-key]") || target.closest("[data-label]")) return;
@@ -487,6 +528,18 @@ export function Timeline() {
           (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
         }}
         onPointerMove={(event) => {
+          const drag = keyDrag.current;
+          if (
+            drag &&
+            drag.pointerId === event.pointerId &&
+            scrollRef.current?.hasPointerCapture(event.pointerId)
+          ) {
+            const rect = scrollRef.current.getBoundingClientRect();
+            const x = event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth;
+            const targetTime = snapTime(x / timelinePx, useDoc.getState().duration);
+            useDoc.getState().moveKeys(drag.keys, targetTime - drag.startTime);
+            return;
+          }
           const start = marqueeStart.current;
           if (start && scrollRef.current) {
             const rect = scrollRef.current.getBoundingClientRect();
@@ -505,6 +558,14 @@ export function Timeline() {
           setTime(timeFromClient(event.clientX));
         }}
         onPointerUp={(event) => {
+          if (keyDrag.current?.pointerId === event.pointerId) {
+            keyDrag.current = null;
+            useDoc.getState().endUndoGroup();
+            if (scrollRef.current?.hasPointerCapture(event.pointerId)) {
+              scrollRef.current.releasePointerCapture(event.pointerId);
+            }
+            return;
+          }
           const start = marqueeStart.current;
           if (start && scrollRef.current) {
             const dx = event.clientX - start.startClientX;
@@ -563,7 +624,11 @@ export function Timeline() {
           }
           scrub.current = false;
         }}
-        onPointerCancel={() => {
+        onPointerCancel={(event) => {
+          if (keyDrag.current?.pointerId === event.pointerId) {
+            keyDrag.current = null;
+            useDoc.getState().endUndoGroup();
+          }
           marqueeStart.current = null;
           setMarquee(null);
           scrub.current = false;
@@ -749,6 +814,7 @@ export function Timeline() {
                                 labelWidth={labelWidth}
                                 selected={selectedKeys.filter((key) => key.layerId === layer.id)}
                                 onContextMenu={onContextMenu}
+                                onBeginMove={beginKeyMove}
                               />
                             );
                           }
@@ -763,10 +829,8 @@ export function Timeline() {
                               selected={selectedKeys
                                 .filter((key) => key.layerId === layer.id && key.prop === prop)
                                 .map((key) => key.id)}
-                              onSelect={(keyId, extend) =>
-                                selectKey({ layerId: layer.id, prop, id: keyId }, extend)
-                              }
                               onContextMenu={onContextMenu}
+                              onBeginMove={beginKeyMove}
                             />
                           );
                         })}
@@ -983,8 +1047,8 @@ function PropTrack({
   px,
   labelWidth,
   selected,
-  onSelect,
   onContextMenu,
+  onBeginMove,
 }: {
   layerId: string;
   prop: PropKey;
@@ -992,8 +1056,12 @@ function PropTrack({
   px: number;
   labelWidth: number;
   selected: string[];
-  onSelect: (id: string, extend: boolean) => void;
   onContextMenu: (keys: SelectedKey[], x: number, y: number) => void;
+  onBeginMove: (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    startTime: number,
+    keys: SelectedKey[],
+  ) => void;
 }) {
   const track = useDoc((s) => s.layers.find((l) => l.id === layerId)?.tracks[prop] ?? []);
   const time = useDoc((s) => s.time);
@@ -1001,10 +1069,6 @@ function PropTrack({
   const toggleKey = useDoc((s) => s.toggleKey);
   const layer = useDoc((s) => s.layers.find((l) => l.id === layerId));
   const setDisplayed = useDoc((s) => s.setDisplayed);
-  const moveKeys = useDoc((s) => s.moveKeys);
-  const beginUndoGroup = useDoc((s) => s.beginUndoGroup);
-  const endUndoGroup = useDoc((s) => s.endUndoGroup);
-  const dragOrigin = useRef<{ startTime: number; keys: KeyframeMove[] } | null>(null);
   const armed = layer?.armed[prop];
   const live = keyNear(track, time);
 
@@ -1067,47 +1131,7 @@ function PropTrack({
               event.stopPropagation();
               onContextMenu([{ layerId, prop, id: kf.id }], event.clientX, event.clientY);
             }}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              if (event.button !== 0) return;
-              const alreadySelected = useDoc
-                .getState()
-                .selectedKeys.some(
-                  (key) => key.layerId === layerId && key.prop === prop && key.id === kf.id,
-                );
-              if (!alreadySelected || event.shiftKey) onSelect(kf.id, event.shiftKey);
-              const state = useDoc.getState();
-              const keySelected = state.selectedKeys.some(
-                (key) => key.layerId === layerId && key.prop === prop && key.id === kf.id,
-              );
-              const selection = keySelected ? state.selectedKeys : [{ layerId, prop, id: kf.id }];
-              const keys = selection.flatMap((key) => {
-                const currentLayer = state.layers.find((item) => item.id === key.layerId);
-                const origin = currentLayer?.tracks[key.prop].find((item) => item.id === key.id);
-                return origin ? [{ ...key, t: origin.t }] : [];
-              });
-              dragOrigin.current = { startTime: kf.t, keys };
-              beginUndoGroup();
-              event.currentTarget.setPointerCapture(event.pointerId);
-            }}
-            onPointerMove={(event) => {
-              if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-              const origin = dragOrigin.current;
-              const scroller = event.currentTarget.closest(".overflow-auto") as HTMLElement | null;
-              if (!scroller || !origin) return;
-              const rect = scroller.getBoundingClientRect();
-              const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
-              const targetTime = snapTime(x / px, duration);
-              moveKeys(origin.keys, targetTime - origin.startTime);
-            }}
-            onPointerUp={() => {
-              dragOrigin.current = null;
-              endUndoGroup();
-            }}
-            onPointerCancel={() => {
-              dragOrigin.current = null;
-              endUndoGroup();
-            }}
+            onPointerDown={(event) => onBeginMove(event, kf.t, [{ layerId, prop, id: kf.id }])}
           />
         ))}
       </div>
@@ -1123,6 +1147,7 @@ function VectorTrack({
   labelWidth,
   selected,
   onContextMenu,
+  onBeginMove,
 }: {
   layerId: string;
   vector: "position" | "scaleVector";
@@ -1131,6 +1156,11 @@ function VectorTrack({
   labelWidth: number;
   selected: SelectedKey[];
   onContextMenu: (keys: SelectedKey[], x: number, y: number) => void;
+  onBeginMove: (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    startTime: number,
+    keys: SelectedKey[],
+  ) => void;
 }) {
   const primary: PropKey = vector === "position" ? "x" : "scale";
   const secondary: PropKey = vector === "position" ? "y" : "scaleY";
@@ -1139,9 +1169,6 @@ function VectorTrack({
   const primaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[primary] ?? []);
   const secondaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[secondary] ?? []);
   const time = useDoc((state) => state.time);
-  const dragOrigin = useRef<{ startTime: number; keys: KeyframeMove[] } | null>(null);
-  const beginUndoGroup = useDoc((s) => s.beginUndoGroup);
-  const endUndoGroup = useDoc((s) => s.endUndoGroup);
 
   const markers = new Map<number, { t: number; primary?: Keyframe; secondary?: Keyframe }>();
   for (const key of primaryTrack) {
@@ -1161,16 +1188,18 @@ function VectorTrack({
     const state = useDoc.getState();
     const current = state.layers.find((item) => item.id === layerId);
     if (!current) return;
-    let nextPrimary = displayed(current, primary, state.time);
-    let nextSecondary = displayed(current, secondary, state.time);
+    const currentPrimary = displayed(current, primary, state.time);
+    const currentSecondary = displayed(current, secondary, state.time);
+    let nextPrimary = currentPrimary;
+    let nextSecondary = currentSecondary;
     if (prop === primary) nextPrimary = value;
     else nextSecondary = value;
     if (vector === "scaleVector" && current.scaleLinked !== false) {
       if (prop === primary) {
-        const ratio = nextPrimary === 0 ? 1 : nextSecondary / nextPrimary;
+        const ratio = currentPrimary === 0 ? 1 : currentSecondary / currentPrimary;
         nextSecondary = Math.min(10, Math.max(0.01, value * ratio));
       } else {
-        const ratio = nextSecondary === 0 ? 1 : nextPrimary / nextSecondary;
+        const ratio = currentSecondary === 0 ? 1 : currentPrimary / currentSecondary;
         nextPrimary = Math.min(10, Math.max(0.01, value * ratio));
       }
     }
@@ -1284,56 +1313,7 @@ function VectorTrack({
                 event.stopPropagation();
                 onContextMenu(markerKeys, event.clientX, event.clientY);
               }}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-                if (event.button !== 0 || markerKeys.length === 0) return;
-                event.preventDefault();
-                const state = useDoc.getState();
-                const alreadySelected = markerKeys.every((key) =>
-                  state.selectedKeys.some(
-                    (item) => item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
-                  ),
-                );
-                if (event.shiftKey) {
-                  state.selectKeys([
-                    ...new Map(
-                      [...state.selectedKeys, ...markerKeys].map((key) => [
-                        `${key.layerId}:${key.prop}:${key.id}`,
-                        key,
-                      ]),
-                    ).values(),
-                  ]);
-                } else if (!alreadySelected) {
-                  state.selectKeys(markerKeys);
-                }
-                const selection = useDoc.getState().selectedKeys;
-                const keys = selection.flatMap((key) => {
-                  const currentLayer = state.layers.find((item) => item.id === key.layerId);
-                  const origin = currentLayer?.tracks[key.prop].find((item) => item.id === key.id);
-                  return origin ? [{ ...key, t: origin.t }] : [];
-                });
-                dragOrigin.current = { startTime: marker.t, keys };
-                beginUndoGroup();
-                event.currentTarget.setPointerCapture(event.pointerId);
-              }}
-              onPointerMove={(event) => {
-                if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-                const origin = dragOrigin.current;
-                const scroller = event.currentTarget.closest(".overflow-auto") as HTMLElement | null;
-                if (!scroller || !origin) return;
-                const rect = scroller.getBoundingClientRect();
-                const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
-                const targetTime = snapTime(x / px, useDoc.getState().duration);
-                useDoc.getState().moveKeys(origin.keys, targetTime - origin.startTime);
-              }}
-              onPointerUp={() => {
-                dragOrigin.current = null;
-                endUndoGroup();
-              }}
-              onPointerCancel={() => {
-                dragOrigin.current = null;
-                endUndoGroup();
-              }}
+              onPointerDown={(event) => onBeginMove(event, marker.t, markerKeys)}
             />
           );
         })}

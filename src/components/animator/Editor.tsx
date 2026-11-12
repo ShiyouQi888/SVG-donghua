@@ -12,10 +12,12 @@ import {
   Upload,
 } from "lucide-react";
 import { type Tool } from "@/lib/animator/model";
+import { getProjectAsset, projectAssetImageSource } from "@/lib/animator/project-assets";
 import { loadSnapshot, saveSnapshot, useDoc } from "@/lib/animator/store";
 import { Stage } from "./Stage";
 import { Timeline } from "./Timeline";
 import { ExportDialog } from "./ExportDialog";
+import { ProjectPanel } from "./ProjectPanel";
 
 const TOOLS: { id: Tool; label: string; icon: typeof MousePointer2 }[] = [
   { id: "select", label: "选择", icon: MousePointer2 },
@@ -54,6 +56,43 @@ export function Editor() {
   const exportHeight = useDoc((s) => s.exportHeight);
   const setProjectSize = useDoc((s) => s.setProjectSize);
   const setExportSize = useDoc((s) => s.setExportSize);
+
+  const placeProjectAsset = async (assetId: string, position?: { x: number; y: number }) => {
+    try {
+      const asset = await getProjectAsset(assetId);
+      if (!asset) throw new Error("素材已不存在");
+      const imageSrc = await projectAssetImageSource(asset);
+      const state = useDoc.getState();
+      const scale = Math.min(
+        1,
+        (state.projectWidth * 0.82) / asset.width,
+        (state.projectHeight * 0.82) / asset.height,
+      );
+      const width = asset.width * scale;
+      const height = asset.height * scale;
+      const centerX = Math.min(
+        state.projectWidth - width / 2,
+        Math.max(width / 2, position?.x ?? state.projectWidth / 2),
+      );
+      const centerY = Math.min(
+        state.projectHeight - height / 2,
+        Math.max(height / 2, position?.y ?? state.projectHeight / 2),
+      );
+      state.addShape("image", centerX, centerY);
+      const layerId = useDoc.getState().selectedId;
+      if (!layerId) return;
+      useDoc.getState().setPaint(layerId, {
+        imageSrc,
+        x: centerX - width / 2,
+        y: centerY - height / 2,
+        w: width,
+        h: height,
+      });
+      useDoc.getState().rename(layerId, asset.name);
+    } catch {
+      window.alert("无法添加这个素材，请重新导入后再试。");
+    }
+  };
 
   useEffect(() => {
     const saved = loadSnapshot();
@@ -158,7 +197,7 @@ export function Editor() {
           <span className="text-sm font-semibold tracking-tight">金帧</span>
           <span className="font-mono text-xs text-key">K</span>
         </div>
-        <div className="order-3 flex min-w-0 basis-full items-center gap-1 overflow-x-auto lg:order-none lg:min-w-0 lg:flex-1 lg:basis-auto">
+        <div className="app-scrollbar order-3 flex min-w-0 basis-full items-center gap-1 overflow-x-auto lg:order-none lg:min-w-0 lg:flex-1 lg:basis-auto">
           {TOOLS.map((item) => {
             const Icon = item.icon;
             const on = tool === item.id;
@@ -171,8 +210,10 @@ export function Editor() {
                   item.id === "pen"
                     ? "点击添加锚点，拖动创建曲线手柄；双击或 Enter 完成，Esc 取消"
                     : item.id === "select"
-                      ? "选择和移动图层"
-                      : "按住鼠标拖动绘制"
+                      ? "选择和移动图层；拖动手柄缩放，按住 Shift 从中心缩放"
+                      : item.id === "text"
+                        ? "拖动设置文字范围；绘制后双击文字可编辑"
+                        : "按住鼠标拖动绘制；按住 Shift 同比绘制"
                 }
                 className={`flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 py-1 text-xs ${on ? "border-primary bg-primary/15 text-primary" : "border-border text-muted hover:text-fg"}`}
               >
@@ -296,7 +337,10 @@ export function Editor() {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <Stage />
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <ProjectPanel onPlaceAsset={(assetId) => void placeProjectAsset(assetId)} />
+          <Stage onPlaceAsset={(assetId, position) => void placeProjectAsset(assetId, position)} />
+        </div>
       </div>
       <Timeline />
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />

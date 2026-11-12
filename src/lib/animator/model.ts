@@ -390,6 +390,23 @@ export function motionBlurVector(
   };
 }
 
+export function motionBlurFilterRegion(
+  layer: Pick<Layer, "w" | "h">,
+  blur: { x: number; y: number },
+): { x: string; y: string; width: string; height: string } {
+  // SVG clips blur output at the filter region; extend it past four sigma so the tail fades naturally.
+  const paddingPercent = (deviation: number, size: number) =>
+    Math.max(2, Math.ceil((deviation * 4 * 100) / Math.max(1, size)));
+  const padX = paddingPercent(blur.x, layer.w);
+  const padY = paddingPercent(blur.y, layer.h);
+  return {
+    x: `-${padX}%`,
+    y: `-${padY}%`,
+    width: `${100 + padX * 2}%`,
+    height: `${100 + padY * 2}%`,
+  };
+}
+
 export function vectorPathData(points: VectorPathPoint[], closed = false): string {
   if (points.length === 0) return "";
   const start = points[0];
@@ -745,10 +762,15 @@ export function buildExport(
       if (vectors.some((vector) => vector.x > 0.15 || vector.y > 0.15)) {
         const id = `motion-blur-${layer.id}`;
         motionFilters.set(layer.id, id);
+        const maxBlur = {
+          x: Math.max(...vectors.map((vector) => vector.x)),
+          y: Math.max(...vectors.map((vector) => vector.y)),
+        };
+        const region = motionBlurFilterRegion(layer, maxBlur);
         const values = vectors.map((vector) => `${vector.x.toFixed(2)} ${vector.y.toFixed(2)}`);
         const keyTimes = sampleTimes.map((t) => (duration <= 0 ? 0 : t / duration).toFixed(4));
         filters.push(
-          `<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="${values[0]}"><animate attributeName="stdDeviation" values="${values.join(";")}" keyTimes="${keyTimes.join(";")}" dur="${duration}s" repeatCount="indefinite"/></feGaussianBlur></filter>`,
+          `<filter id="${id}" x="${region.x}" y="${region.y}" width="${region.width}" height="${region.height}" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="${values[0]}"><animate attributeName="stdDeviation" values="${values.join(";")}" keyTimes="${keyTimes.join(";")}" dur="${duration}s" repeatCount="indefinite"/></feGaussianBlur></filter>`,
         );
       }
     }
@@ -806,8 +828,9 @@ export function buildFrameExport(
       const vector = motionBlurVector(layer, time, duration, motionBlur.strength);
       if (vector.x > 0.1 || vector.y > 0.1) {
         filterId = `motion-blur-frame-${layer.id}`;
+        const region = motionBlurFilterRegion(layer, vector);
         filters.push(
-          `<filter id="${filterId}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="${vector.x.toFixed(2)} ${vector.y.toFixed(2)}"/></filter>`,
+          `<filter id="${filterId}" x="${region.x}" y="${region.y}" width="${region.width}" height="${region.height}" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="${vector.x.toFixed(2)} ${vector.y.toFixed(2)}"/></filter>`,
         );
       }
     }

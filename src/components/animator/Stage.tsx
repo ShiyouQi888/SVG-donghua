@@ -1,8 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type PointerEvent,
+} from "react";
+import { Maximize2, Minus, Plus } from "lucide-react";
 import {
   displayed,
   keyNear,
   layerPathData,
+  motionBlurFilterRegion,
   motionBlurVector,
   numberToColor,
   pose,
@@ -14,16 +24,25 @@ import {
   type MotionTangent,
   type VectorPathPoint,
 } from "@/lib/animator/model";
+import { PROJECT_ASSET_DRAG_TYPE } from "@/lib/animator/project-assets";
 import { useDoc } from "@/lib/animator/store";
 
-function svgPoint(svg: SVGSVGElement, event: PointerEvent): { x: number; y: number } {
+function svgPointFromClient(
+  svg: SVGSVGElement,
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } {
   const pt = svg.createSVGPoint();
-  pt.x = event.clientX;
-  pt.y = event.clientY;
+  pt.x = clientX;
+  pt.y = clientY;
   const ctm = svg.getScreenCTM();
   if (!ctm) return { x: 0, y: 0 };
   const local = pt.matrixTransform(ctm.inverse());
   return { x: local.x, y: local.y };
+}
+
+function svgPoint(svg: SVGSVGElement, event: PointerEvent): { x: number; y: number } {
+  return svgPointFromClient(svg, event.clientX, event.clientY);
 }
 
 function snapAxis(
@@ -54,6 +73,7 @@ type Drawing = {
   clientY: number;
   endX: number;
   endY: number;
+  constrainRatio: boolean;
 };
 
 type MotionControl = {
@@ -63,6 +83,17 @@ type MotionControl = {
   in: { x: number; y: number };
   outKeyId: string;
   inKeyId: string;
+};
+
+type StageCamera = { zoom: number; x: number; y: number };
+type StagePan = {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  x: number;
+  y: number;
+  scaleX: number;
+  scaleY: number;
 };
 
 type MotionHandleDrag = {
@@ -98,7 +129,7 @@ function svgPointInGroup(group: SVGGElement, event: PointerEvent): { x: number; 
 function drawingBounds(drawing: Drawing, clampToMinimum = false) {
   let endX = drawing.endX;
   let endY = drawing.endY;
-  if (drawing.kind === "circle") {
+  if (drawing.kind === "circle" || (drawing.constrainRatio && drawing.kind !== "text")) {
     const size = Math.max(Math.abs(endX - drawing.x), Math.abs(endY - drawing.y));
     endX = drawing.x + Math.sign(endX - drawing.x || 1) * size;
     endY = drawing.y + Math.sign(endY - drawing.y || 1) * size;
@@ -218,10 +249,26 @@ function ShapeBody({ layer, time }: { layer: Layer; time: number }) {
   );
 }
 
-export function Stage() {
+export function Stage({
+  onPlaceAsset,
+}: {
+  onPlaceAsset: (assetId: string, position: { x: number; y: number }) => void;
+}) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [camera, setCamera] = useState<StageCamera>({ zoom: 1, x: 0, y: 0 });
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
+  const panDrag = useRef<StagePan | null>(null);
+  const spacePanRef = useRef(false);
+  const [spacePan, setSpacePan] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [snapGuides, setSnapGuides] = useState<{ x?: number; y?: number } | null>(null);
+  const [assetDropActive, setAssetDropActive] = useState(false);
   const [drawing, setDrawing] = useState<Drawing | null>(null);
+  const [textEdit, setTextEdit] = useState<{ id: string; value: string } | null>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
+  const textEditFinished = useRef(false);
   const drawingRef = useRef<Drawing | null>(null);
   const [penPoints, setPenPointsState] = useState<VectorPathPoint[]>([]);
   const penPointsRef = useRef<VectorPathPoint[]>([]);
@@ -283,6 +330,115 @@ export function Stage() {
   const beginUndoGroup = useDoc((s) => s.beginUndoGroup);
   const endUndoGroup = useDoc((s) => s.endUndoGroup);
   const selectedLayer = selectedId ? layers.find((layer) => layer.id === selectedId) : undefined;
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      const element = target instanceof HTMLElement ? target : null;
+      return Boolean(
+        element?.isContentEditable ||
+          (element && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(element.tagName)),
+      );
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.code !== "Space" ||
+        event.repeat ||
+        isEditableTarget(event.target) ||
+        !stageRef.current?.matches(":hover")
+      ) return;
+      event.preventDefault();
+      spacePanRef.current = true;
+      setSpacePan(true);
+    };
+    const clearSpacePan = () => {
+      spacePanRef.current = false;
+      setSpacePan(false);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") clearSpacePan();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearSpacePan);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearSpacePan);
+      spacePanRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const fitCamera = { zoom: 1, x: 0, y: 0 };
+    cameraRef.current = fitCamera;
+    setCamera(fitCamera);
+  }, [projectWidth, projectHeight]);
+
+  const zoomAt = useCallback((nextZoom: number, clientX?: number, clientY?: number) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const current = cameraRef.current;
+    const zoom = Math.min(8, Math.max(0.1, nextZoom));
+    const rect = svg.getBoundingClientRect();
+    const oldWidth = projectWidth / current.zoom;
+    const oldHeight = projectHeight / current.zoom;
+    const scale = Math.min(rect.width / oldWidth, rect.height / oldHeight);
+    const shownWidth = oldWidth * scale;
+    const shownHeight = oldHeight * scale;
+    const offsetX = rect.left + (rect.width - shownWidth) / 2;
+    const offsetY = rect.top + (rect.height - shownHeight) / 2;
+    const pointerX = clientX ?? rect.left + rect.width / 2;
+    const pointerY = clientY ?? rect.top + rect.height / 2;
+    const unitX = Math.min(1, Math.max(0, (pointerX - offsetX) / shownWidth));
+    const unitY = Math.min(1, Math.max(0, (pointerY - offsetY) / shownHeight));
+    const worldX = current.x + unitX * oldWidth;
+    const worldY = current.y + unitY * oldHeight;
+    const newWidth = projectWidth / zoom;
+    const newHeight = projectHeight / zoom;
+    const next = {
+      zoom,
+      x: worldX - unitX * newWidth,
+      y: worldY - unitY * newHeight,
+    };
+    cameraRef.current = next;
+    setCamera(next);
+  }, [projectWidth, projectHeight]);
+
+  const fitCamera = () => {
+    const next = { zoom: 1, x: 0, y: 0 };
+    cameraRef.current = next;
+    setCamera(next);
+  };
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      zoomAt(cameraRef.current.zoom * Math.exp(-event.deltaY * 0.0015), event.clientX, event.clientY);
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, [zoomAt]);
+
+  useEffect(() => {
+    if (!textEdit) return;
+    textInputRef.current?.focus();
+    textInputRef.current?.select();
+  }, [textEdit?.id]);
+
+  const commitTextEdit = () => {
+    if (!textEdit || textEditFinished.current) return;
+    textEditFinished.current = true;
+    setPaint(textEdit.id, { text: textEdit.value });
+    setTextEdit(null);
+  };
+
+  const cancelTextEdit = () => {
+    if (textEditFinished.current) return;
+    textEditFinished.current = true;
+    setTextEdit(null);
+  };
   const updatePenPoints = (next: VectorPathPoint[]) => {
     penPointsRef.current = next;
     setPenPointsState(next);
@@ -400,13 +556,102 @@ export function Stage() {
   );
 
   return (
-    <div className="stage-grid relative min-h-0 flex-1 overflow-hidden">
+    <div
+      ref={stageRef}
+      className={`stage-grid relative min-h-0 flex-1 overflow-hidden ${isPanning ? "cursor-grabbing" : spacePan ? "cursor-grab" : ""}`}
+      onPointerDownCapture={(event) => {
+        const target = event.target as Element;
+        if (target.closest("[data-stage-zoom-controls]")) return;
+        if (event.button !== 1 && !(event.button === 0 && spacePanRef.current)) return;
+        const svg = svgRef.current;
+        const matrix = svg?.getScreenCTM();
+        if (!svg || !matrix) return;
+        const current = cameraRef.current;
+        panDrag.current = {
+          pointerId: event.pointerId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          x: current.x,
+          y: current.y,
+          scaleX: matrix.a || 1,
+          scaleY: matrix.d || 1,
+        };
+        setIsPanning(true);
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const pan = panDrag.current;
+        if (!pan || pan.pointerId !== event.pointerId) return;
+        const next = {
+          ...cameraRef.current,
+          x: pan.x - (event.clientX - pan.clientX) / pan.scaleX,
+          y: pan.y - (event.clientY - pan.clientY) / pan.scaleY,
+        };
+        cameraRef.current = next;
+        setCamera(next);
+      }}
+      onPointerUpCapture={(event) => {
+        if (panDrag.current?.pointerId !== event.pointerId) return;
+        panDrag.current = null;
+        setIsPanning(false);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        event.stopPropagation();
+      }}
+      onPointerCancelCapture={(event) => {
+        if (panDrag.current?.pointerId !== event.pointerId) return;
+        panDrag.current = null;
+        setIsPanning(false);
+        event.stopPropagation();
+      }}
+      onDragEnter={(event: ReactDragEvent<HTMLDivElement>) => {
+        if (!Array.from(event.dataTransfer.types).includes(PROJECT_ASSET_DRAG_TYPE)) return;
+        event.preventDefault();
+        setAssetDropActive(true);
+      }}
+      onDragOver={(event: ReactDragEvent<HTMLDivElement>) => {
+        if (!Array.from(event.dataTransfer.types).includes(PROJECT_ASSET_DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(event: ReactDragEvent<HTMLDivElement>) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setAssetDropActive(false);
+        }
+      }}
+      onDrop={(event: ReactDragEvent<HTMLDivElement>) => {
+        const assetId = event.dataTransfer.getData(PROJECT_ASSET_DRAG_TYPE);
+        if (!assetId) return;
+        event.preventDefault();
+        setAssetDropActive(false);
+        const svg = svgRef.current;
+        if (!svg) return;
+        const point = svgPointFromClient(svg, event.clientX, event.clientY);
+        onPlaceAsset(assetId, {
+          x: Math.min(projectWidth, Math.max(0, point.x)),
+          y: Math.min(projectHeight, Math.max(0, point.y)),
+        });
+      }}
+    >
       <div className="stage-canvas-viewport">
         <svg
           ref={svgRef}
-          viewBox={`0 0 ${projectWidth} ${projectHeight}`}
+          viewBox={`${camera.x} ${camera.y} ${projectWidth / camera.zoom} ${projectHeight / camera.zoom}`}
           preserveAspectRatio="xMidYMid meet"
           className="h-full w-full touch-none"
+          onDoubleClick={(event) => {
+            const hit = document.elementFromPoint(event.clientX, event.clientY);
+            const layerGroup = hit?.closest<SVGGElement>("[data-layer-id]");
+            const layer = layers.find((item) => item.id === layerGroup?.dataset.layerId);
+            if (layer?.kind !== "text") return;
+            event.preventDefault();
+            selectLayer(layer.id);
+            textEditFinished.current = false;
+            setTextEdit({ id: layer.id, value: layer.text });
+          }}
           onPointerMove={(event) => {
             const svg = svgRef.current;
             if (!svg) return;
@@ -466,7 +711,12 @@ export function Stage() {
               return;
             }
             if (drawingRef.current) {
-              const next = { ...drawingRef.current, endX: point.x, endY: point.y };
+              const next = {
+                ...drawingRef.current,
+                endX: point.x,
+                endY: point.y,
+                constrainRatio: event.shiftKey,
+              };
               drawingRef.current = next;
               setDrawing(next);
               return;
@@ -484,13 +734,17 @@ export function Stage() {
               const sin = Math.sin(angle);
               const dx = (screenDx * cos + screenDy * sin) / Math.max(0.001, Math.abs(r.scaleX));
               const dy = (-screenDx * sin + screenDy * cos) / Math.max(0.001, Math.abs(r.scaleY));
-              let w = Math.max(12, r.w + (r.hx < 0 ? -dx : r.hx > 0 ? dx : 0));
-              let h = Math.max(12, r.h + (r.hy < 0 ? -dy : r.hy > 0 ? dy : 0));
+              const fromCenter = event.shiftKey;
+              const resizeX = r.hx < 0 ? -dx : r.hx > 0 ? dx : 0;
+              const resizeY = r.hy < 0 ? -dy : r.hy > 0 ? dy : 0;
+              let w = Math.max(12, r.w + resizeX * (fromCenter ? 2 : 1));
+              let h = Math.max(12, r.h + resizeY * (fromCenter ? 2 : 1));
               let factorX = r.hx === 0 ? 1 : w / r.w;
               let factorY = r.hy === 0 ? 1 : h / r.h;
               if (r.lockRatio) {
-                const xMotion = r.hx === 0 ? 0 : Math.abs(dx / r.w);
-                const yMotion = r.hy === 0 ? 0 : Math.abs(dy / r.h);
+                const multiplier = fromCenter ? 2 : 1;
+                const xMotion = r.hx === 0 ? 0 : Math.abs((dx * multiplier) / r.w);
+                const yMotion = r.hy === 0 ? 0 : Math.abs((dy * multiplier) / r.h);
                 const factor = xMotion > yMotion ? factorX : factorY;
                 factorX = factor;
                 factorY = factor;
@@ -500,8 +754,12 @@ export function Stage() {
               if (r.scaleAnimated) {
                 const nextScaleX = Math.max(0.01, r.scaleX * factorX);
                 const nextScaleY = Math.max(0.01, r.scaleY * factorY);
-                const localShiftX = (r.hx * r.w * (nextScaleX - r.scaleX)) / 2;
-                const localShiftY = (r.hy * r.h * (nextScaleY - r.scaleY)) / 2;
+                const localShiftX = fromCenter
+                  ? 0
+                  : (r.hx * r.w * (nextScaleX - r.scaleX)) / 2;
+                const localShiftY = fromCenter
+                  ? 0
+                  : (r.hy * r.h * (nextScaleY - r.scaleY)) / 2;
                 const shiftX = cos * localShiftX - sin * localShiftY;
                 const shiftY = sin * localShiftX + cos * localShiftY;
                 setDisplayed(r.id, "scale", nextScaleX, true);
@@ -511,14 +769,16 @@ export function Stage() {
                 return;
               }
               const patch: { x: number; y: number; w: number; h: number; fontSize?: number } = {
-                x:
-                  r.hx < 0
+                x: fromCenter
+                  ? r.x + (r.w - w) / 2
+                  : r.hx < 0
                     ? r.x + r.w - w
                     : r.hx === 0 && r.lockRatio
                       ? r.x + (r.w - w) / 2
                       : r.x,
-                y:
-                  r.hy < 0
+                y: fromCenter
+                  ? r.y + (r.h - h) / 2
+                  : r.hy < 0
                     ? r.y + r.h - h
                     : r.hy === 0 && r.lockRatio
                       ? r.y + (r.h - h) / 2
@@ -577,7 +837,12 @@ export function Stage() {
             if (drawingRef.current && svg) {
               const start = drawingRef.current;
               const point = svgPoint(svg, event);
-              const finalDrawing = { ...start, endX: point.x, endY: point.y };
+              const finalDrawing = {
+                ...start,
+                endX: point.x,
+                endY: point.y,
+                constrainRatio: event.shiftKey,
+              };
               const distance = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
               drawingRef.current = null;
               setDrawing(null);
@@ -685,6 +950,7 @@ export function Stage() {
                 clientY: event.clientY,
                 endX: p.x,
                 endY: p.y,
+                constrainRatio: event.shiftKey,
               };
               drawingRef.current = next;
               setDrawing(next);
@@ -700,18 +966,20 @@ export function Stage() {
         >
           {blurByLayer.size > 0 && (
             <defs>
-              {[...blurByLayer].map(([id, blur]) => (
-                <filter
-                  key={id}
-                  id={`motion-blur-${id}`}
-                  x="-50%"
-                  y="-50%"
-                  width="200%"
-                  height="200%"
-                >
-                  <feGaussianBlur stdDeviation={`${blur.x.toFixed(2)} ${blur.y.toFixed(2)}`} />
-                </filter>
-              ))}
+              {[...blurByLayer].map(([id, blur]) => {
+                const layer = layers.find((item) => item.id === id);
+                if (!layer) return null;
+                return (
+                  <filter
+                    key={id}
+                    id={`motion-blur-${id}`}
+                    {...motionBlurFilterRegion(layer, blur)}
+                    colorInterpolationFilters="sRGB"
+                  >
+                    <feGaussianBlur stdDeviation={`${blur.x.toFixed(2)} ${blur.y.toFixed(2)}`} />
+                  </filter>
+                );
+              })}
             </defs>
           )}
           <rect
@@ -791,6 +1059,7 @@ export function Stage() {
             return (
               <g
                 key={layer.id}
+                data-layer-id={layer.id}
                 transform={svgTransform(layer, time)}
                 style={{ pointerEvents: layer.visible ? "auto" : "none" }}
                 onPointerDown={(event) => {
@@ -851,6 +1120,39 @@ export function Stage() {
                 >
                   <ShapeBody layer={layer} time={time} />
                 </g>
+                {textEdit?.id === layer.id && layer.kind === "text" && (
+                  <foreignObject x={layer.x} y={layer.y} width={layer.w} height={layer.h}>
+                    <input
+                      ref={textInputRef}
+                      type="text"
+                      aria-label="编辑画布文字"
+                      value={textEdit.value}
+                      onChange={(event) =>
+                        setTextEdit({ id: layer.id, value: event.target.value })
+                      }
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onBlur={commitTextEdit}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.nativeEvent.isComposing) return;
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitTextEdit();
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelTextEdit();
+                        }
+                      }}
+                      className="size-full border border-primary bg-bg/95 px-2 text-center text-fg outline-none"
+                      style={{
+                        fontFamily: "IBM Plex Sans, Source Han Sans SC, sans-serif",
+                        fontSize: layer.fontSize,
+                        fontWeight: layer.fontWeight ?? 600,
+                      }}
+                    />
+                  </foreignObject>
+                )}
                 {layer.kind === "path" && (
                   <path
                     d={layerPathData(layer)}
@@ -1071,12 +1373,55 @@ export function Stage() {
           )}
         </svg>
       </div>
+      <div
+        data-stage-zoom-controls
+        className="absolute right-5 top-5 z-20 flex h-8 items-center gap-1 rounded-md border border-border/80 bg-surface/90 p-1 text-[10px] text-muted shadow-lg backdrop-blur-sm"
+        aria-label="画布缩放"
+      >
+        <button
+          type="button"
+          aria-label="缩小画布"
+          title="缩小画布"
+          onClick={() => zoomAt(camera.zoom / 1.25)}
+          className="grid size-6 place-items-center rounded hover:bg-surface-2 hover:text-fg"
+        >
+          <Minus className="size-3" />
+        </button>
+        <span className="min-w-10 text-center font-mono tabular-nums">{Math.round(camera.zoom * 100)}%</span>
+        <button
+          type="button"
+          aria-label="放大画布"
+          title="放大画布"
+          onClick={() => zoomAt(camera.zoom * 1.25)}
+          className="grid size-6 place-items-center rounded hover:bg-surface-2 hover:text-fg"
+        >
+          <Plus className="size-3" />
+        </button>
+        <span className="mx-0.5 h-4 w-px bg-border" />
+        <button
+          type="button"
+          aria-label="适配画布"
+          title="重置为适配画布"
+          onClick={fitCamera}
+          className="flex h-6 items-center gap-1 rounded px-1.5 hover:bg-surface-2 hover:text-fg"
+        >
+          <Maximize2 className="size-3" />
+          适配
+        </button>
+      </div>
       {layers.length === 0 && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center text-center">
           <div>
             <p className="text-lg font-medium text-fg">画布是空的</p>
             <p className="mt-1 text-sm text-muted">选择形状工具后，在画布上按住并拖动绘制</p>
           </div>
+        </div>
+      )}
+      {assetDropActive && (
+        <div className="pointer-events-none absolute inset-3 z-10 grid place-items-center rounded-lg border border-dashed border-primary bg-primary/10">
+          <span className="rounded-md border border-primary/40 bg-surface/95 px-3 py-2 text-xs font-medium text-primary shadow-lg">
+            松开以添加到画布
+          </span>
         </div>
       )}
     </div>
