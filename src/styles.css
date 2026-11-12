@@ -1,0 +1,322 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", "Source Han Sans SC", "Noto Sans SC", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-bg: #121418;
+  --color-surface: #1b2028;
+  --color-surface-2: #242b36;
+  --color-fg: #e7ebf2;
+  --color-muted: #8b93a3;
+  --color-primary: #4c9fff;
+  --color-key: #e6b325;
+  --color-play: #ff5c4d;
+  --color-border: #2c3340;
+  --color-danger: #e85d4c;
+  --radius: 0.5rem;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+}
+
+.stage-grid {
+  background-color: #0e1116;
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.stage-canvas-viewport {
+  position: absolute;
+  inset: 16px;
+}
+
+@media (max-width: 639px) {
+  .stage-canvas-viewport {
+    inset: 12px;
+  }
+}
+
+.stage-canvas-boundary {
+  fill: var(--color-bg);
+  stroke: color-mix(in oklab, var(--color-fg) 30%, var(--color-border));
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+}
+
+.stage-safe-area {
+  fill: none;
+  stroke-width: 1px;
+  stroke-dasharray: 8 6;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-safe-area-action {
+  stroke: color-mix(in oklab, var(--color-primary) 75%, transparent);
+}
+
+.stage-safe-area-title {
+  stroke: color-mix(in oklab, var(--color-key) 80%, transparent);
+  stroke-dasharray: 3 5;
+}
+
+.stage-snap-guide {
+  stroke: var(--color-key);
+  stroke-width: 1px;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.stage-resize-handle {
+  fill: var(--color-primary);
+  stroke: var(--color-surface);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.timeline-scrub-value {
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.timeline-key-marquee {
+  border: 1px solid color-mix(in oklab, var(--color-primary) 90%, white);
+  background: color-mix(in oklab, var(--color-primary) 18%, transparent);
+}
+
+.timeline-resize-handle {
+  display: grid;
+  height: 10px;
+  flex: 0 0 10px;
+  place-items: center;
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.timeline-resize-handle::before {
+  width: 2rem;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-muted);
+  content: "";
+  opacity: 0.5;
+  transition:
+    background-color 150ms ease,
+    opacity 150ms ease;
+}
+
+.timeline-resize-handle:hover::before,
+.timeline-resize-handle:focus-visible::before {
+  background: var(--color-primary);
+  opacity: 1;
+}
+
+.timeline-color-control {
+  width: 1.5rem;
+  height: 1.25rem;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.25rem;
+  background: var(--color-surface-2);
+  cursor: pointer;
+}
+
+.timeline-color-control::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.timeline-color-control::-webkit-color-swatch {
+  border: 0;
+  border-radius: 2px;
+}
+
+.timeline-color-control::-moz-color-swatch {
+  border: 0;
+  border-radius: 2px;
+}
+
+.k-diamond {
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 1.5px solid var(--color-key);
+  background: transparent;
+  transform: rotate(45deg);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.35);
+}
+
+.k-diamond.is-on {
+  background: var(--color-key);
+}
+
+.k-diamond.is-selected {
+  outline: 2px solid var(--color-fg);
+  outline-offset: 2px;
+}
+
+.tl-key {
+  position: absolute;
+  top: 50%;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-top: -0.35rem;
+  margin-left: -0.35rem;
+  border: 1.5px solid var(--color-key);
+  background: var(--color-key);
+  transform: rotate(45deg);
+  z-index: 2;
+}
+
+.tl-key.is-selected {
+  background: var(--color-fg);
+  border-color: var(--color-fg);
+}
+
+.timeline-range {
+  appearance: none;
+  height: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.timeline-range:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.timeline-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-border);
+}
+
+.timeline-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-border);
+}
+
+.timeline-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+  transition: transform 150ms ease;
+}
+
+.timeline-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+  transition: transform 150ms ease;
+}
+
+.timeline-range:hover::-webkit-slider-thumb,
+.timeline-range:active::-webkit-slider-thumb,
+.timeline-range:hover::-moz-range-thumb,
+.timeline-range:active::-moz-range-thumb {
+  transform: scale(1.14);
+}
+
+.timeline-scroll {
+  scrollbar-color: color-mix(in oklab, var(--color-muted) 45%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.timeline-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.timeline-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-muted) 45%, transparent);
+  background-clip: content-box;
+}
+
+.bezier-graph {
+  touch-action: none;
+  user-select: none;
+}
+
+.bezier-grid {
+  fill: none;
+  stroke: var(--color-border);
+  stroke-width: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.bezier-guide {
+  fill: none;
+  stroke: var(--color-muted);
+  stroke-dasharray: 3 4;
+  stroke-width: 1;
+  opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.bezier-curve {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-linecap: round;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.bezier-handle-line {
+  fill: none;
+  stroke: var(--color-key);
+  stroke-width: 1;
+  opacity: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.bezier-handle {
+  fill: var(--color-key);
+  stroke: var(--color-surface);
+  stroke-width: 1.5;
+  cursor: grab;
+  vector-effect: non-scaling-stroke;
+}
+
+.bezier-handle:active {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-range::-webkit-slider-thumb,
+  .timeline-range::-moz-range-thumb {
+    transition: none;
+  }
+}

@@ -1,0 +1,16 @@
+node_modules/
+.node_modules.lock
+.vercel/
+.tanstack/
+.grok/
+screenshots/
+dist/
+build/
+coverage/
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
+Thumbs.db
+.DS_Store

@@ -1,0 +1,2110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SVG Animator — 关键帧时间轴编辑</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #161b22;
+      --panel-2: #1c2333;
+      --border: #2a3344;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-2: #3fb950;
+      --danger: #f85149;
+      --warning: #d29922;
+      --kf: #f0c14b;
+      --playhead: #ff6b6b;
+      --radius: 8px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+      --timeline-h: 220px;
+      --track-h: 28px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      height: 48px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    .logo {
+      font-weight: 700;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo span { color: var(--accent); }
+
+    .header-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    button, .btn {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    button:hover { background: #243044; border-color: #3a4a66; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover { background: #4c9aed; }
+    button.danger { color: var(--danger); }
+    button.danger:hover { background: rgba(248,81,73,0.15); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.sm { padding: 3px 8px; font-size: 11px; }
+
+    .main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 220px 1fr 260px;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .sidebar {
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sidebar.right {
+      border-right: none;
+      border-left: 1px solid var(--border);
+    }
+
+    .panel-section {
+      border-bottom: 1px solid var(--border);
+      padding: 10px;
+    }
+    .panel-section h3 {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+
+    .tools-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 5px;
+    }
+    .tool-btn {
+      aspect-ratio: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      font-size: 10px;
+      padding: 6px 2px;
+      background: var(--panel-2);
+    }
+    .tool-btn.active {
+      border-color: var(--accent);
+      background: rgba(88,166,255,0.12);
+      color: var(--accent);
+    }
+    .tool-btn svg {
+      width: 18px; height: 18px;
+      stroke: currentColor; fill: none; stroke-width: 1.8;
+    }
+
+    .layers-list { flex: 1; overflow-y: auto; padding: 6px; }
+    .layer-item {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 7px; border-radius: 5px; cursor: pointer; font-size: 12px; margin-bottom: 2px;
+    }
+    .layer-item:hover { background: var(--panel-2); }
+    .layer-item.selected { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .layer-item .vis-btn {
+      width: 18px; height: 18px; padding: 0; border: none; background: transparent;
+      color: var(--text-muted); font-size: 11px;
+    }
+    .layer-item .vis-btn.hidden { opacity: 0.35; }
+    .layer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .layer-item .kf-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--kf);
+      opacity: 0; flex-shrink: 0;
+    }
+    .layer-item.has-kf .kf-dot { opacity: 1; }
+
+    .canvas-wrap {
+      display: flex; flex-direction: column;
+      background: #0a0c10; position: relative; overflow: hidden; min-height: 0;
+    }
+    .canvas-toolbar {
+      height: 36px; background: var(--panel); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 10px; gap: 6px; flex-shrink: 0;
+    }
+    .canvas-area {
+      flex: 1; position: relative; overflow: auto;
+      display: flex; align-items: center; justify-content: center;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+    #svg-stage {
+      background: #1a1f2b; box-shadow: var(--shadow);
+      cursor: crosshair; user-select: none;
+    }
+    #svg-stage.dragging { cursor: grabbing; }
+
+    .sel-box {
+      fill: none; stroke: var(--accent); stroke-width: 1.5;
+      stroke-dasharray: 4 2; pointer-events: none;
+    }
+
+    .prop-row {
+      display: flex; align-items: center; gap: 6px;
+      margin-bottom: 6px; font-size: 12px;
+    }
+    .prop-row label { width: 56px; color: var(--text-muted); flex-shrink: 0; font-size: 11px; }
+    .prop-row input[type="text"],
+    .prop-row input[type="number"],
+    .prop-row select {
+      flex: 1; background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); padding: 4px 6px; font-size: 12px; min-width: 0;
+    }
+    .prop-row input[type="color"] {
+      width: 32px; height: 24px; padding: 1px; border: 1px solid var(--border);
+      border-radius: 4px; background: var(--panel-2); cursor: pointer;
+    }
+    .prop-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+    .prop-group { margin-bottom: 12px; }
+    .prop-group h4 { font-size: 11px; margin-bottom: 6px; color: var(--text); }
+
+    .tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border);
+      margin: -10px -10px 10px;
+    }
+    .tab {
+      flex: 1; text-align: center; padding: 8px; font-size: 11px;
+      cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* ========== KEYFRAME TIMELINE ========== */
+    .timeline-panel {
+      height: var(--timeline-h);
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      user-select: none;
+    }
+
+    .tl-toolbar {
+      height: 36px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .play-btn {
+      width: 30px; height: 30px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      padding: 0; font-size: 13px;
+    }
+
+    .time-display {
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 100px;
+    }
+
+    .tl-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* Left labels column */
+    .tl-labels {
+      width: 140px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      background: var(--panel);
+    }
+
+    .tl-label-header {
+      height: 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      font-size: 10px;
+      color: var(--text-muted);
+      background: var(--panel-2);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    .tl-label-row {
+      height: var(--track-h);
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      font-size: 11px;
+      border-bottom: 1px solid rgba(42,51,68,0.6);
+      gap: 6px;
+      cursor: pointer;
+    }
+    .tl-label-row:hover { background: var(--panel-2); }
+    .tl-label-row.layer-row {
+      font-weight: 600;
+      background: rgba(88,166,255,0.06);
+    }
+    .tl-label-row.prop-row-tl {
+      padding-left: 18px;
+      color: var(--text-muted);
+    }
+    .tl-label-row.prop-row-tl.active-prop {
+      color: var(--accent);
+      background: rgba(88,166,255,0.08);
+    }
+    .tl-label-row .toggle {
+      font-size: 9px;
+      width: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Right tracks area */
+    .tl-tracks-wrap {
+      flex: 1;
+      position: relative;
+      overflow: auto;
+      background: #12151c;
+    }
+
+    .tl-ruler {
+      height: 24px;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+    }
+
+    .tl-ruler-canvas {
+      display: block;
+      height: 24px;
+    }
+
+    .tl-tracks {
+      position: relative;
+    }
+
+    .tl-track-row {
+      height: var(--track-h);
+      border-bottom: 1px solid rgba(42,51,68,0.5);
+      position: relative;
+    }
+    .tl-track-row.layer-track {
+      background: rgba(88,166,255,0.04);
+    }
+
+    /* Playhead */
+    .tl-playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: var(--playhead);
+      z-index: 10;
+      pointer-events: none;
+    }
+    .tl-playhead::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -5px;
+      width: 0;
+      height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 8px solid var(--playhead);
+    }
+
+    /* Keyframe diamonds */
+    .kf {
+      position: absolute;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      margin-left: -5px;
+      margin-top: -5px;
+      background: var(--kf);
+      transform: rotate(45deg);
+      border: 1px solid #c9a227;
+      cursor: grab;
+      z-index: 3;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+    }
+    .kf:hover, .kf.selected {
+      background: #ffe066;
+      border-color: #fff;
+      transform: rotate(45deg) scale(1.25);
+      z-index: 4;
+    }
+    .kf.dragging { cursor: grabbing; z-index: 6; }
+
+    .kf-empty-hint {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      font-size: 12px;
+      pointer-events: none;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.65);
+      display: none; align-items: center; justify-content: center; z-index: 1000;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+      width: 90%; max-width: 720px; max-height: 80vh;
+      display: flex; flex-direction: column; box-shadow: var(--shadow);
+    }
+    .modal-header {
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .modal-header h2 { font-size: 15px; }
+    .modal-body { padding: 14px 18px; overflow: auto; flex: 1; }
+    .modal-body pre {
+      background: #0d1117; border: 1px solid var(--border); border-radius: 8px;
+      padding: 14px; font-size: 11px; line-height: 1.5; overflow: auto;
+      max-height: 380px; white-space: pre-wrap; word-break: break-all;
+    }
+    .modal-footer {
+      padding: 10px 18px; border-top: 1px solid var(--border);
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+
+    .empty-hint {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: var(--text-muted); pointer-events: none; font-size: 13px; gap: 6px;
+    }
+    .empty-hint strong { color: var(--text); font-size: 15px; }
+
+    .toast {
+      position: fixed; bottom: 240px; left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--panel-2); border: 1px solid var(--border);
+      padding: 8px 16px; border-radius: 8px; font-size: 12px;
+      opacity: 0; transition: all 0.25s; z-index: 2000; pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    ::-webkit-scrollbar { width: 7px; height: 7px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+    input[type="file"] { display: none; }
+
+    .hint-text {
+      font-size: 11px; color: var(--text-muted); line-height: 1.5; margin-top: 6px;
+    }
+
+    .kf-actions {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+      </svg>
+      SVG <span>Animator</span>
+      <span style="font-weight:400; font-size:11px; color:var(--text-muted); margin-left:4px;">关键帧时间轴</span>
+    </div>
+    <div class="header-actions">
+      <button id="btn-import" title="导入 SVG">导入</button>
+      <input type="file" id="file-input" accept=".svg,image/svg+xml" />
+      <button id="btn-clear" class="danger">清空</button>
+      <button id="btn-export" class="primary">导出 SVG</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- Left -->
+    <aside class="sidebar">
+      <div class="panel-section">
+        <h3>添加工具</h3>
+        <div class="tools-grid">
+          <button class="tool-btn active" data-tool="select" title="选择 (V)">
+            <svg viewBox="0 0 24 24"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
+            选择
+          </button>
+          <button class="tool-btn" data-tool="rect" title="矩形 (R)">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+            矩形
+          </button>
+          <button class="tool-btn" data-tool="circle" title="圆形 (C)">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>
+            圆形
+          </button>
+          <button class="tool-btn" data-tool="ellipse" title="椭圆">
+            <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="6"/></svg>
+            椭圆
+          </button>
+          <button class="tool-btn" data-tool="line" title="直线">
+            <svg viewBox="0 0 24 24"><line x1="4" y1="20" x2="20" y2="4"/></svg>
+            直线
+          </button>
+          <button class="tool-btn" data-tool="text" title="文字 (T)">
+            <svg viewBox="0 0 24 24"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+            文字
+          </button>
+        </div>
+      </div>
+      <div class="panel-section" style="flex:1; display:flex; flex-direction:column; overflow:hidden; padding-bottom:0;">
+        <h3>图层 <span id="layer-count" style="font-weight:400; color:var(--text-muted)"></span></h3>
+        <div class="layers-list" id="layers-list"></div>
+      </div>
+    </aside>
+
+    <!-- Canvas -->
+    <div class="canvas-wrap">
+      <div class="canvas-toolbar">
+        <button id="btn-zoom-out" class="sm">−</button>
+        <span id="zoom-label" style="font-size:11px; min-width:40px; text-align:center;">100%</span>
+        <button id="btn-zoom-in" class="sm">+</button>
+        <button id="btn-zoom-reset" class="sm">重置</button>
+        <div style="flex:1"></div>
+        <label style="font-size:11px; color:var(--text-muted); display:flex; align-items:center; gap:5px;">
+          背景
+          <select id="bg-select" style="background:var(--panel-2); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:2px 5px; font-size:11px;">
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+            <option value="transparent">透明</option>
+          </select>
+        </label>
+      </div>
+      <div class="canvas-area" id="canvas-area">
+        <svg id="svg-stage" width="600" height="400" viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+            </pattern>
+          </defs>
+          <rect id="stage-bg" width="100%" height="100%" fill="#1a1f2b"/>
+          <rect width="100%" height="100%" fill="url(#grid)" pointer-events="none"/>
+          <g id="shapes-root"></g>
+          <g id="selection-root"></g>
+        </svg>
+        <div class="empty-hint" id="empty-hint">
+          <strong>开始创作</strong>
+          <span>添加形状 → 在时间轴上添加关键帧 → 播放预览</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right -->
+    <aside class="sidebar right">
+      <div class="panel-section" style="flex:1; overflow-y:auto;">
+        <div class="tabs">
+          <div class="tab active" data-tab="props">属性</div>
+          <div class="tab" data-tab="kf">关键帧</div>
+        </div>
+
+        <div class="tab-content active" id="tab-props">
+          <div id="props-empty" style="color:var(--text-muted); font-size:12px; padding:10px 0;">
+            选择一个图层以编辑属性
+          </div>
+          <div id="props-panel" style="display:none;">
+            <div class="prop-group">
+              <h4>基本</h4>
+              <div class="prop-row">
+                <label>名称</label>
+                <input type="text" id="prop-name" />
+              </div>
+              <div class="prop-row">
+                <label>填充</label>
+                <input type="color" id="prop-fill" value="#58a6ff" />
+                <input type="text" id="prop-fill-hex" value="#58a6ff" style="width:64px; flex:none;" />
+              </div>
+              <div class="prop-row">
+                <label>描边</label>
+                <input type="color" id="prop-stroke" value="#ffffff" />
+                <input type="number" id="prop-stroke-width" value="2" min="0" step="0.5" style="width:44px; flex:none;" />
+              </div>
+              <div class="prop-row">
+                <label>透明度</label>
+                <input type="range" id="prop-opacity" min="0" max="1" step="0.01" value="1" />
+                <span id="prop-opacity-val" style="width:28px; text-align:right; font-size:11px;">1</span>
+              </div>
+            </div>
+            <div class="prop-group">
+              <h4>变换（当前帧）</h4>
+              <div class="prop-row"><label>X</label><input type="number" id="prop-x" step="1" /></div>
+              <div class="prop-row"><label>Y</label><input type="number" id="prop-y" step="1" /></div>
+              <div class="prop-row"><label>宽度</label><input type="number" id="prop-w" step="1" min="1" /></div>
+              <div class="prop-row"><label>高度</label><input type="number" id="prop-h" step="1" min="1" /></div>
+              <div class="prop-row"><label>旋转°</label><input type="number" id="prop-rotate" step="1" value="0" /></div>
+              <div class="prop-row"><label>缩放</label><input type="number" id="prop-scale" step="0.05" min="0.05" value="1" /></div>
+            </div>
+            <div class="prop-group" id="text-props" style="display:none;">
+              <h4>文字</h4>
+              <div class="prop-row"><label>内容</label><input type="text" id="prop-text" /></div>
+              <div class="prop-row"><label>字号</label><input type="number" id="prop-fontsize" min="8" max="200" value="24" /></div>
+            </div>
+            <button id="btn-delete-layer" class="danger" style="width:100%; margin-top:6px;">删除图层</button>
+          </div>
+        </div>
+
+        <div class="tab-content" id="tab-kf">
+          <div id="kf-empty" style="color:var(--text-muted); font-size:12px; padding:10px 0;">
+            选择图层后，可在时间轴添加关键帧
+          </div>
+          <div id="kf-panel" style="display:none;">
+            <div class="prop-group">
+              <h4>在播放头位置</h4>
+              <div class="kf-actions">
+                <button class="sm" data-add-kf="opacity">+ 透明度</button>
+                <button class="sm" data-add-kf="x">+ X</button>
+                <button class="sm" data-add-kf="y">+ Y</button>
+                <button class="sm" data-add-kf="rotate">+ 旋转</button>
+                <button class="sm" data-add-kf="scale">+ 缩放</button>
+              </div>
+              <p class="hint-text">
+                或在时间轴属性轨道上<strong>双击</strong>添加关键帧。<br/>
+                拖动菱形关键帧可调整时间；选中后可改属性值。
+              </p>
+            </div>
+            <div class="prop-group">
+              <h4>选中关键帧</h4>
+              <div id="kf-selected-info" style="font-size:12px; color:var(--text-muted); margin-bottom:6px;">无</div>
+              <div class="prop-row" id="kf-value-row" style="display:none;">
+                <label>值</label>
+                <input type="number" id="kf-value" step="0.01" />
+              </div>
+              <div class="prop-row" id="kf-time-row" style="display:none;">
+                <label>时间(s)</label>
+                <input type="number" id="kf-time" step="0.05" min="0" />
+              </div>
+              <button id="btn-delete-kf" class="danger sm" style="display:none; width:100%;">删除关键帧</button>
+            </div>
+            <div class="prop-group">
+              <h4>快捷预设（写入关键帧）</h4>
+              <div class="kf-actions">
+                <button class="sm" data-preset="fadeIn">淡入</button>
+                <button class="sm" data-preset="fadeOut">淡出</button>
+                <button class="sm" data-preset="scaleIn">放大入</button>
+                <button class="sm" data-preset="bounce">弹跳</button>
+                <button class="sm" data-preset="slideRight">右滑入</button>
+                <button class="sm" data-preset="spin">旋转一圈</button>
+              </div>
+            </div>
+            <button id="btn-clear-all-kf" style="width:100%; margin-top:4px;">清除本层全部关键帧</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ========== Timeline Panel ========== -->
+  <div class="timeline-panel">
+    <div class="tl-toolbar">
+      <button class="play-btn" id="btn-play" title="播放/暂停 (Space)">▶</button>
+      <button class="sm" id="btn-stop" title="停止">⏹</button>
+      <div class="time-display" id="time-display">0.00 / 3.00 s</div>
+      <div style="flex:1"></div>
+      <label style="font-size:11px; color:var(--text-muted); display:flex; align-items:center; gap:5px;">
+        总时长
+        <input type="number" id="total-duration" value="3" min="0.5" max="60" step="0.25"
+          style="width:48px; background:var(--panel-2); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:2px 5px; font-size:12px;" />
+        s
+      </label>
+      <label style="font-size:11px; color:var(--text-muted); display:flex; align-items:center; gap:5px; margin-left:8px;">
+        缩放
+        <input type="range" id="tl-zoom" min="40" max="200" value="80" style="width:80px; accent-color:var(--accent);" />
+      </label>
+    </div>
+    <div class="tl-body">
+      <div class="tl-labels" id="tl-labels">
+        <div class="tl-label-header">图层 / 属性</div>
+        <!-- rows injected -->
+      </div>
+      <div class="tl-tracks-wrap" id="tl-tracks-wrap">
+        <div class="tl-ruler" id="tl-ruler">
+          <canvas class="tl-ruler-canvas" id="tl-ruler-canvas"></canvas>
+        </div>
+        <div class="tl-tracks" id="tl-tracks">
+          <!-- track rows + keyframes injected -->
+        </div>
+        <div class="tl-playhead" id="tl-playhead" style="left:0"></div>
+        <div class="kf-empty-hint" id="tl-empty-hint">添加图层后，在此编辑关键帧时间轴</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Modal -->
+  <div class="modal-overlay" id="export-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>导出动画 SVG</h2>
+        <button id="btn-close-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">
+          根据关键帧生成 CSS @keyframes，可直接嵌入网页，无需 JS。
+        </p>
+        <pre id="export-code"></pre>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-copy-code">复制代码</button>
+        <button id="btn-download-svg" class="primary">下载 .svg</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+  (function () {
+    // ==================== Constants ====================
+    const PROPS = ['opacity', 'x', 'y', 'rotate', 'scale'];
+    const PROP_LABELS = { opacity: '透明度', x: 'X', y: 'Y', rotate: '旋转', scale: '缩放' };
+    const PROP_DEFAULTS = { opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 };
+
+    // ==================== State ====================
+    const state = {
+      tool: 'select',
+      layers: [], // { id, type, name, el, visible, base: {x,y,w,h,opacity,rotate,scale,fill...}, tracks: { opacity:[{t,v}], ... } }
+      selectedId: null,
+      selectedKf: null, // { layerId, prop, index }
+      expanded: {},     // layerId -> true
+      zoom: 1,
+      isPlaying: false,
+      playStart: 0,
+      currentTime: 0,
+      rafId: null,
+      totalDuration: 3,
+      pxPerSec: 80,     // timeline zoom
+      drawing: null,
+      dragging: null,
+      kfDrag: null,     // { layerId, prop, index, startX, origT }
+      scrubbing: false,
+      nextId: 1,
+    };
+
+    const $ = (s) => document.querySelector(s);
+    const $$ = (s) => document.querySelectorAll(s);
+
+    const svgStage = $('#svg-stage');
+    const shapesRoot = $('#shapes-root');
+    const selectionRoot = $('#selection-root');
+    const layersList = $('#layers-list');
+    const emptyHint = $('#empty-hint');
+    const tlLabels = $('#tl-labels');
+    const tlTracks = $('#tl-tracks');
+    const tlTracksWrap = $('#tl-tracks-wrap');
+    const tlPlayhead = $('#tl-playhead');
+    const tlRulerCanvas = $('#tl-ruler-canvas');
+    const tlEmptyHint = $('#tl-empty-hint');
+
+    // ==================== Utils ====================
+    function toast(msg) {
+      const t = $('#toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2000);
+    }
+
+    function uid() { return 'el_' + (state.nextId++); }
+
+    function getLayer(id) { return state.layers.find(l => l.id === id); }
+
+    function hasKeyframes(layer) {
+      if (!layer.tracks) return false;
+      return PROPS.some(p => layer.tracks[p] && layer.tracks[p].length > 0);
+    }
+
+    function ensureTracks(layer) {
+      if (!layer.tracks) layer.tracks = {};
+      PROPS.forEach(p => { if (!layer.tracks[p]) layer.tracks[p] = []; });
+    }
+
+    function sortTrack(arr) {
+      arr.sort((a, b) => a.t - b.t);
+    }
+
+    /** Linear interpolation on a track at time t */
+    function sampleTrack(kfs, t, def) {
+      if (!kfs || !kfs.length) return def;
+      if (t <= kfs[0].t) return kfs[0].v;
+      if (t >= kfs[kfs.length - 1].t) return kfs[kfs.length - 1].v;
+      for (let i = 0; i < kfs.length - 1; i++) {
+        const a = kfs[i], b = kfs[i + 1];
+        if (t >= a.t && t <= b.t) {
+          const u = (b.t - a.t) < 1e-9 ? 0 : (t - a.t) / (b.t - a.t);
+          // ease-in-out approx
+          const e = u * u * (3 - 2 * u);
+          return a.v + (b.v - a.v) * e;
+        }
+      }
+      return def;
+    }
+
+    function timeToX(t) {
+      return t * state.pxPerSec;
+    }
+    function xToTime(x) {
+      return Math.max(0, Math.min(state.totalDuration, x / state.pxPerSec));
+    }
+
+    // ==================== Base geometry helpers ====================
+    function readBase(layer) {
+      const el = layer.el;
+      const bbox = el.getBBox();
+      const base = {
+        x: bbox.x,
+        y: bbox.y,
+        w: bbox.width,
+        h: bbox.height,
+        opacity: parseFloat(el.getAttribute('opacity') || 1),
+        rotate: layer.base?.rotate ?? 0,
+        scale: layer.base?.scale ?? 1,
+        cx: 0, cy: 0,
+      };
+      if (layer.type === 'circle' || layer.type === 'ellipse') {
+        base.cx = parseFloat(el.getAttribute('cx'));
+        base.cy = parseFloat(el.getAttribute('cy'));
+      } else if (layer.type === 'line') {
+        base.x1 = parseFloat(el.getAttribute('x1'));
+        base.y1 = parseFloat(el.getAttribute('y1'));
+        base.x2 = parseFloat(el.getAttribute('x2'));
+        base.y2 = parseFloat(el.getAttribute('y2'));
+      } else if (layer.type === 'text') {
+        base.tx = parseFloat(el.getAttribute('x'));
+        base.ty = parseFloat(el.getAttribute('y'));
+      }
+      layer.base = { ...layer.base, ...base };
+      return layer.base;
+    }
+
+    function applyVisualAtTime(layer, t) {
+      ensureTracks(layer);
+      const base = layer.base || readBase(layer);
+      const opacity = sampleTrack(layer.tracks.opacity, t, base.opacity);
+      const dx = sampleTrack(layer.tracks.x, t, 0);
+      const dy = sampleTrack(layer.tracks.y, t, 0);
+      const rot = sampleTrack(layer.tracks.rotate, t, base.rotate);
+      const sc = sampleTrack(layer.tracks.scale, t, base.scale);
+
+      layer.el.setAttribute('opacity', opacity);
+      // Use CSS transform relative to base position via transform-origin center
+      layer.el.style.transformOrigin = 'center';
+      layer.el.style.transformBox = 'fill-box';
+      layer.el.style.transform = `translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${sc})`;
+    }
+
+    function applyAllAtTime(t) {
+      state.layers.forEach(l => {
+        if (l.visible) applyVisualAtTime(l, t);
+      });
+      updateSelectionUI();
+    }
+
+    // ==================== Tools ====================
+    $$('.tool-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        $$('.tool-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.tool = btn.dataset.tool;
+        svgStage.style.cursor = state.tool === 'select' ? 'default' : 'crosshair';
+      });
+    });
+
+    $$('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        $$('.tab').forEach(t => t.classList.remove('active'));
+        $$('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        $(`#tab-${tab.dataset.tab}`).classList.add('active');
+      });
+    });
+
+    // ==================== Create shapes ====================
+    function createShape(type, x, y, w = 80, h = 80) {
+      const id = uid();
+      let el;
+      const fill = '#58a6ff';
+      const stroke = '#ffffff';
+      const strokeWidth = 2;
+
+      switch (type) {
+        case 'rect':
+          el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          el.setAttribute('x', x - w / 2);
+          el.setAttribute('y', y - h / 2);
+          el.setAttribute('width', w);
+          el.setAttribute('height', h);
+          el.setAttribute('rx', 4);
+          break;
+        case 'circle':
+          el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          el.setAttribute('cx', x);
+          el.setAttribute('cy', y);
+          el.setAttribute('r', Math.min(w, h) / 2);
+          break;
+        case 'ellipse':
+          el = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
+          el.setAttribute('cx', x);
+          el.setAttribute('cy', y);
+          el.setAttribute('rx', w / 2);
+          el.setAttribute('ry', h / 2);
+          break;
+        case 'line':
+          el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          el.setAttribute('x1', x - 40);
+          el.setAttribute('y1', y);
+          el.setAttribute('x2', x + 40);
+          el.setAttribute('y2', y);
+          break;
+        case 'text':
+          el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          el.setAttribute('x', x);
+          el.setAttribute('y', y);
+          el.setAttribute('font-size', 24);
+          el.setAttribute('font-family', 'sans-serif');
+          el.textContent = '文字';
+          break;
+        default: return null;
+      }
+
+      el.setAttribute('id', id);
+      el.setAttribute('fill', type === 'line' ? 'none' : fill);
+      el.setAttribute('stroke', stroke);
+      el.setAttribute('stroke-width', strokeWidth);
+      el.setAttribute('opacity', '1');
+      el.style.transformOrigin = 'center';
+      el.style.transformBox = 'fill-box';
+      shapesRoot.appendChild(el);
+
+      const names = { rect: '矩形', circle: '圆形', ellipse: '椭圆', line: '直线', text: '文字' };
+      const layer = {
+        id, type,
+        name: `${names[type] || type} ${state.nextId - 1}`,
+        el, visible: true,
+        tracks: { opacity: [], x: [], y: [], rotate: [], scale: [] },
+        base: { opacity: 1, rotate: 0, scale: 1 },
+      };
+      state.layers.push(layer);
+      readBase(layer);
+      state.expanded[id] = true;
+      updateLayersList();
+      updateEmptyHint();
+      selectLayer(id);
+      renderTimeline();
+      return layer;
+    }
+
+    // ==================== Selection ====================
+    function selectLayer(id) {
+      state.selectedId = id;
+      state.selectedKf = null;
+      updateLayersList();
+      updateSelectionUI();
+      updatePropsPanel();
+      updateKfPanel();
+      renderTimeline();
+    }
+
+    function updateSelectionUI() {
+      selectionRoot.innerHTML = '';
+      if (!state.selectedId) return;
+      const layer = getLayer(state.selectedId);
+      if (!layer || !layer.visible) return;
+      try {
+        const bbox = layer.el.getBBox();
+        const pad = 4;
+        const box = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        box.setAttribute('class', 'sel-box');
+        box.setAttribute('x', bbox.x - pad);
+        box.setAttribute('y', bbox.y - pad);
+        box.setAttribute('width', bbox.width + pad * 2);
+        box.setAttribute('height', bbox.height + pad * 2);
+        // selection box doesn't follow CSS transform perfectly for all cases,
+        // but good enough for feedback
+        selectionRoot.appendChild(box);
+      } catch (_) {}
+    }
+
+    // ==================== Layers list ====================
+    function updateLayersList() {
+      layersList.innerHTML = '';
+      $('#layer-count').textContent = state.layers.length ? `(${state.layers.length})` : '';
+      [...state.layers].reverse().forEach(layer => {
+        const item = document.createElement('div');
+        item.className = 'layer-item'
+          + (layer.id === state.selectedId ? ' selected' : '')
+          + (hasKeyframes(layer) ? ' has-kf' : '');
+        item.dataset.id = layer.id;
+        item.innerHTML = `
+          <button class="vis-btn ${layer.visible ? '' : 'hidden'}" data-vis="${layer.id}">${layer.visible ? '👁' : '👁‍🗨'}</button>
+          <span class="layer-name">${layer.name}</span>
+          <span class="kf-dot" title="有关键帧"></span>
+        `;
+        item.addEventListener('click', (e) => {
+          if (e.target.classList.contains('vis-btn')) return;
+          selectLayer(layer.id);
+        });
+        layersList.appendChild(item);
+      });
+      $$('.vis-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const layer = getLayer(btn.dataset.vis);
+          if (!layer) return;
+          layer.visible = !layer.visible;
+          layer.el.style.display = layer.visible ? '' : 'none';
+          updateLayersList();
+          updateSelectionUI();
+          renderTimeline();
+        });
+      });
+    }
+
+    function updateEmptyHint() {
+      emptyHint.style.display = state.layers.length ? 'none' : 'flex';
+      tlEmptyHint.style.display = state.layers.length ? 'none' : 'flex';
+    }
+
+    // ==================== Props panel ====================
+    function updatePropsPanel() {
+      const empty = $('#props-empty');
+      const panel = $('#props-panel');
+      if (!state.selectedId) {
+        empty.style.display = 'block';
+        panel.style.display = 'none';
+        return;
+      }
+      empty.style.display = 'none';
+      panel.style.display = 'block';
+
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      const el = layer.el;
+      const base = layer.base || readBase(layer);
+      const t = state.currentTime;
+
+      $('#prop-name').value = layer.name;
+      const fill = el.getAttribute('fill') || '#58a6ff';
+      $('#prop-fill').value = fill.startsWith('#') ? fill : '#58a6ff';
+      $('#prop-fill-hex').value = fill;
+      const stroke = el.getAttribute('stroke') || '#ffffff';
+      $('#prop-stroke').value = stroke.startsWith('#') ? stroke : '#ffffff';
+      $('#prop-stroke-width').value = el.getAttribute('stroke-width') || 2;
+
+      // show sampled values at current time
+      const opacity = sampleTrack(layer.tracks.opacity, t, base.opacity);
+      $('#prop-opacity').value = opacity;
+      $('#prop-opacity-val').textContent = opacity.toFixed(2);
+
+      try {
+        const bbox = el.getBBox();
+        $('#prop-x').value = Math.round(bbox.x + sampleTrack(layer.tracks.x, t, 0));
+        $('#prop-y').value = Math.round(bbox.y + sampleTrack(layer.tracks.y, t, 0));
+        $('#prop-w').value = Math.round(bbox.width);
+        $('#prop-h').value = Math.round(bbox.height);
+      } catch (_) {}
+
+      $('#prop-rotate').value = Math.round(sampleTrack(layer.tracks.rotate, t, base.rotate) * 10) / 10;
+      $('#prop-scale').value = Math.round(sampleTrack(layer.tracks.scale, t, base.scale) * 100) / 100;
+
+      const textProps = $('#text-props');
+      if (layer.type === 'text') {
+        textProps.style.display = 'block';
+        $('#prop-text').value = el.textContent;
+        $('#prop-fontsize').value = el.getAttribute('font-size') || 24;
+      } else {
+        textProps.style.display = 'none';
+      }
+    }
+
+    function bindProp(id, handler) {
+      const el = $(id);
+      el.addEventListener('input', handler);
+      el.addEventListener('change', handler);
+    }
+
+    bindProp('#prop-name', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      layer.name = e.target.value;
+      updateLayersList();
+      renderTimeline();
+    });
+    bindProp('#prop-fill', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      layer.el.setAttribute('fill', e.target.value);
+      $('#prop-fill-hex').value = e.target.value;
+    });
+    bindProp('#prop-fill-hex', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      if (/^#[0-9a-fA-F]{3,8}$/.test(e.target.value)) {
+        layer.el.setAttribute('fill', e.target.value);
+        $('#prop-fill').value = e.target.value;
+      }
+    });
+    bindProp('#prop-stroke', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      layer.el.setAttribute('stroke', e.target.value);
+    });
+    bindProp('#prop-stroke-width', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      layer.el.setAttribute('stroke-width', e.target.value);
+    });
+
+    // Editing opacity / transform at current time:
+    // - if keyframe exists near current time, update it
+    // - else update base (or add keyframe if track already has keys)
+    function setPropAtCurrentTime(prop, value) {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      ensureTracks(layer);
+      const t = state.currentTime;
+      const track = layer.tracks[prop];
+      const near = track.findIndex(k => Math.abs(k.t - t) < 0.05);
+      if (near >= 0) {
+        track[near].v = value;
+      } else if (track.length > 0) {
+        // track active — insert keyframe
+        track.push({ t, v: value });
+        sortTrack(track);
+      } else {
+        // no track yet — write to base
+        if (prop === 'opacity') {
+          layer.base.opacity = value;
+          layer.el.setAttribute('opacity', value);
+        } else if (prop === 'rotate') {
+          layer.base.rotate = value;
+        } else if (prop === 'scale') {
+          layer.base.scale = value;
+        } else if (prop === 'x' || prop === 'y') {
+          // for x/y without track, adjust geometry directly
+          adjustBasePosition(layer, prop, value);
+          return;
+        }
+      }
+      applyVisualAtTime(layer, t);
+      updatePropsPanel();
+      renderTimeline();
+    }
+
+    function adjustBasePosition(layer, prop, absoluteVal) {
+      // absoluteVal is desired screen-ish position; we adjust element attrs
+      const el = layer.el;
+      const bbox = el.getBBox();
+      if (prop === 'x') {
+        const dx = absoluteVal - bbox.x;
+        if (layer.type === 'circle' || layer.type === 'ellipse') {
+          el.setAttribute('cx', parseFloat(el.getAttribute('cx')) + dx);
+        } else if (layer.type === 'line') {
+          el.setAttribute('x1', parseFloat(el.getAttribute('x1')) + dx);
+          el.setAttribute('x2', parseFloat(el.getAttribute('x2')) + dx);
+        } else if (layer.type === 'text') {
+          el.setAttribute('x', parseFloat(el.getAttribute('x')) + dx);
+        } else {
+          el.setAttribute('x', absoluteVal);
+        }
+      } else {
+        const dy = absoluteVal - bbox.y;
+        if (layer.type === 'circle' || layer.type === 'ellipse') {
+          el.setAttribute('cy', parseFloat(el.getAttribute('cy')) + dy);
+        } else if (layer.type === 'line') {
+          el.setAttribute('y1', parseFloat(el.getAttribute('y1')) + dy);
+          el.setAttribute('y2', parseFloat(el.getAttribute('y2')) + dy);
+        } else if (layer.type === 'text') {
+          el.setAttribute('y', parseFloat(el.getAttribute('y')) + dy);
+        } else {
+          el.setAttribute('y', absoluteVal);
+        }
+      }
+      readBase(layer);
+      updateSelectionUI();
+    }
+
+    bindProp('#prop-opacity', (e) => {
+      setPropAtCurrentTime('opacity', parseFloat(e.target.value));
+      $('#prop-opacity-val').textContent = parseFloat(e.target.value).toFixed(2);
+    });
+    bindProp('#prop-rotate', (e) => setPropAtCurrentTime('rotate', parseFloat(e.target.value) || 0));
+    bindProp('#prop-scale', (e) => setPropAtCurrentTime('scale', parseFloat(e.target.value) || 1));
+
+    bindProp('#prop-x', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      ensureTracks(layer);
+      if (layer.tracks.x.length) {
+        // treat as offset from base
+        const base = layer.base || readBase(layer);
+        setPropAtCurrentTime('x', parseFloat(e.target.value) - base.x);
+      } else {
+        adjustBasePosition(layer, 'x', parseFloat(e.target.value));
+      }
+    });
+    bindProp('#prop-y', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      ensureTracks(layer);
+      if (layer.tracks.y.length) {
+        const base = layer.base || readBase(layer);
+        setPropAtCurrentTime('y', parseFloat(e.target.value) - base.y);
+      } else {
+        adjustBasePosition(layer, 'y', parseFloat(e.target.value));
+      }
+    });
+
+    bindProp('#prop-w', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      const v = Math.max(1, parseFloat(e.target.value));
+      if (layer.type === 'rect') layer.el.setAttribute('width', v);
+      else if (layer.type === 'circle') layer.el.setAttribute('r', v / 2);
+      else if (layer.type === 'ellipse') layer.el.setAttribute('rx', v / 2);
+      readBase(layer);
+      updateSelectionUI();
+    });
+    bindProp('#prop-h', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      const v = Math.max(1, parseFloat(e.target.value));
+      if (layer.type === 'rect') layer.el.setAttribute('height', v);
+      else if (layer.type === 'ellipse') layer.el.setAttribute('ry', v / 2);
+      readBase(layer);
+      updateSelectionUI();
+    });
+    bindProp('#prop-text', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer || layer.type !== 'text') return;
+      layer.el.textContent = e.target.value;
+      updateSelectionUI();
+    });
+    bindProp('#prop-fontsize', (e) => {
+      const layer = getLayer(state.selectedId);
+      if (!layer || layer.type !== 'text') return;
+      layer.el.setAttribute('font-size', e.target.value);
+      updateSelectionUI();
+    });
+
+    $('#btn-delete-layer').addEventListener('click', () => {
+      if (!state.selectedId) return;
+      const idx = state.layers.findIndex(l => l.id === state.selectedId);
+      if (idx === -1) return;
+      state.layers[idx].el.remove();
+      state.layers.splice(idx, 1);
+      delete state.expanded[state.selectedId];
+      state.selectedId = null;
+      state.selectedKf = null;
+      updateLayersList();
+      updateSelectionUI();
+      updatePropsPanel();
+      updateKfPanel();
+      updateEmptyHint();
+      renderTimeline();
+      toast('图层已删除');
+    });
+
+    // ==================== Keyframe panel ====================
+    function updateKfPanel() {
+      const empty = $('#kf-empty');
+      const panel = $('#kf-panel');
+      if (!state.selectedId) {
+        empty.style.display = 'block';
+        panel.style.display = 'none';
+        return;
+      }
+      empty.style.display = 'none';
+      panel.style.display = 'block';
+
+      const sk = state.selectedKf;
+      if (sk) {
+        const layer = getLayer(sk.layerId);
+        const kf = layer && layer.tracks[sk.prop] && layer.tracks[sk.prop][sk.index];
+        if (kf) {
+          $('#kf-selected-info').textContent = `${PROP_LABELS[sk.prop]} @ ${kf.t.toFixed(2)}s`;
+          $('#kf-value-row').style.display = 'flex';
+          $('#kf-time-row').style.display = 'flex';
+          $('#btn-delete-kf').style.display = 'block';
+          $('#kf-value').value = kf.v;
+          $('#kf-time').value = kf.t;
+          return;
+        }
+      }
+      $('#kf-selected-info').textContent = '无（在时间轴点击关键帧）';
+      $('#kf-value-row').style.display = 'none';
+      $('#kf-time-row').style.display = 'none';
+      $('#btn-delete-kf').style.display = 'none';
+    }
+
+    function addKeyframe(layerId, prop, t, v) {
+      const layer = getLayer(layerId);
+      if (!layer) return;
+      ensureTracks(layer);
+      const track = layer.tracks[prop];
+      // replace if close
+      const near = track.findIndex(k => Math.abs(k.t - t) < 0.04);
+      if (near >= 0) {
+        track[near].v = v;
+        track[near].t = t;
+      } else {
+        track.push({ t, v });
+      }
+      sortTrack(track);
+      state.expanded[layerId] = true;
+      applyVisualAtTime(layer, state.currentTime);
+      updateLayersList();
+      renderTimeline();
+      updateKfPanel();
+    }
+
+    function currentValueForProp(layer, prop) {
+      const base = layer.base || readBase(layer);
+      return sampleTrack(layer.tracks[prop], state.currentTime, PROP_DEFAULTS[prop] ?? base[prop] ?? 0);
+    }
+
+    $$('[data-add-kf]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!state.selectedId) return;
+        const prop = btn.dataset.addKf;
+        const layer = getLayer(state.selectedId);
+        const v = currentValueForProp(layer, prop);
+        addKeyframe(state.selectedId, prop, state.currentTime, v);
+        toast(`已添加 ${PROP_LABELS[prop]} 关键帧 @ ${state.currentTime.toFixed(2)}s`);
+      });
+    });
+
+    $('#kf-value').addEventListener('change', (e) => {
+      const sk = state.selectedKf;
+      if (!sk) return;
+      const layer = getLayer(sk.layerId);
+      if (!layer) return;
+      layer.tracks[sk.prop][sk.index].v = parseFloat(e.target.value);
+      applyAllAtTime(state.currentTime);
+      updatePropsPanel();
+    });
+    $('#kf-time').addEventListener('change', (e) => {
+      const sk = state.selectedKf;
+      if (!sk) return;
+      const layer = getLayer(sk.layerId);
+      if (!layer) return;
+      let t = parseFloat(e.target.value);
+      t = Math.max(0, Math.min(state.totalDuration, t));
+      layer.tracks[sk.prop][sk.index].t = t;
+      sortTrack(layer.tracks[sk.prop]);
+      // re-find index
+      const idx = layer.tracks[sk.prop].findIndex(k => Math.abs(k.t - t) < 1e-6);
+      if (idx >= 0) state.selectedKf.index = idx;
+      renderTimeline();
+      updateKfPanel();
+    });
+
+    $('#btn-delete-kf').addEventListener('click', () => {
+      const sk = state.selectedKf;
+      if (!sk) return;
+      const layer = getLayer(sk.layerId);
+      if (!layer) return;
+      layer.tracks[sk.prop].splice(sk.index, 1);
+      state.selectedKf = null;
+      applyAllAtTime(state.currentTime);
+      updateLayersList();
+      renderTimeline();
+      updateKfPanel();
+      toast('关键帧已删除');
+    });
+
+    $('#btn-clear-all-kf').addEventListener('click', () => {
+      const layer = getLayer(state.selectedId);
+      if (!layer) return;
+      if (!confirm('清除该图层全部关键帧？')) return;
+      PROPS.forEach(p => { layer.tracks[p] = []; });
+      state.selectedKf = null;
+      applyVisualAtTime(layer, state.currentTime);
+      updateLayersList();
+      renderTimeline();
+      updateKfPanel();
+      toast('已清除关键帧');
+    });
+
+    // Presets → write keyframes
+    const PRESET_BUILDERS = {
+      fadeIn: (layer, dur) => {
+        layer.tracks.opacity = [{ t: 0, v: 0 }, { t: Math.min(dur, 1.2), v: 1 }];
+      },
+      fadeOut: (layer, dur) => {
+        layer.tracks.opacity = [{ t: 0, v: 1 }, { t: Math.min(dur, 1.2), v: 0 }];
+      },
+      scaleIn: (layer, dur) => {
+        const d = Math.min(dur, 1.2);
+        layer.tracks.scale = [{ t: 0, v: 0.2 }, { t: d, v: 1 }];
+        layer.tracks.opacity = [{ t: 0, v: 0 }, { t: d, v: 1 }];
+      },
+      bounce: (layer, dur) => {
+        const d = Math.min(dur, 1.5);
+        layer.tracks.y = [
+          { t: 0, v: 0 },
+          { t: d * 0.35, v: -50 },
+          { t: d * 0.55, v: 0 },
+          { t: d * 0.7, v: -25 },
+          { t: d * 0.85, v: 0 },
+          { t: d, v: 0 },
+        ];
+      },
+      slideRight: (layer, dur) => {
+        const d = Math.min(dur, 1.2);
+        layer.tracks.x = [{ t: 0, v: 80 }, { t: d, v: 0 }];
+        layer.tracks.opacity = [{ t: 0, v: 0 }, { t: d, v: 1 }];
+      },
+      spin: (layer, dur) => {
+        layer.tracks.rotate = [{ t: 0, v: 0 }, { t: Math.min(dur, 2), v: 360 }];
+      },
+    };
+
+    $$('[data-preset]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (!state.selectedId) return;
+        const layer = getLayer(state.selectedId);
+        ensureTracks(layer);
+        const builder = PRESET_BUILDERS[btn.dataset.preset];
+        if (!builder) return;
+        builder(layer, state.totalDuration);
+        state.expanded[layer.id] = true;
+        applyVisualAtTime(layer, state.currentTime);
+        updateLayersList();
+        renderTimeline();
+        updateKfPanel();
+        toast('预设关键帧已写入');
+      });
+    });
+
+    // ==================== Timeline rendering ====================
+    function trackWidth() {
+      return Math.max(timeToX(state.totalDuration) + 40, tlTracksWrap.clientWidth || 400);
+    }
+
+    function drawRuler() {
+      const canvas = tlRulerCanvas;
+      const w = trackWidth();
+      const h = 24;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#1c2333';
+      ctx.fillRect(0, 0, w, h);
+
+      const step = state.pxPerSec >= 100 ? 0.25 : state.pxPerSec >= 60 ? 0.5 : 1;
+      ctx.fillStyle = '#8b949e';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      for (let t = 0; t <= state.totalDuration + 0.001; t += step) {
+        const x = timeToX(t);
+        const major = Math.abs(t % 1) < 0.001 || Math.abs(t % 1 - 1) < 0.001;
+        ctx.strokeStyle = major ? '#3a4a66' : '#2a3344';
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, major ? 12 : 16);
+        ctx.lineTo(x + 0.5, 24);
+        ctx.stroke();
+        if (major || step >= 0.5) {
+          ctx.fillText(t.toFixed(step < 1 ? 1 : 0) + 's', x, 10);
+        }
+      }
+    }
+
+    function renderTimeline() {
+      // Labels
+      let labelsHTML = '<div class="tl-label-header">图层 / 属性</div>';
+      let tracksHTML = '';
+
+      const w = trackWidth();
+      tlTracks.style.width = w + 'px';
+      tlTracks.style.minHeight = '1px';
+
+      state.layers.forEach(layer => {
+        const exp = !!state.expanded[layer.id];
+        const sel = layer.id === state.selectedId;
+
+        labelsHTML += `
+          <div class="tl-label-row layer-row" data-layer="${layer.id}">
+            <span class="toggle">${exp ? '▼' : '▶'}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${layer.name}</span>
+          </div>`;
+        tracksHTML += `<div class="tl-track-row layer-track" data-layer="${layer.id}" style="width:${w}px"></div>`;
+
+        if (exp) {
+          PROPS.forEach(prop => {
+            const active = state.selectedKf && state.selectedKf.layerId === layer.id && state.selectedKf.prop === prop;
+            labelsHTML += `
+              <div class="tl-label-row prop-row-tl ${active ? 'active-prop' : ''}" data-layer="${layer.id}" data-prop="${prop}">
+                ${PROP_LABELS[prop]}
+              </div>`;
+            tracksHTML += `<div class="tl-track-row prop-track" data-layer="${layer.id}" data-prop="${prop}" style="width:${w}px"></div>`;
+          });
+        }
+      });
+
+      tlLabels.innerHTML = labelsHTML;
+      tlTracks.innerHTML = tracksHTML;
+
+      // Place keyframes
+      state.layers.forEach(layer => {
+        if (!state.expanded[layer.id]) return;
+        ensureTracks(layer);
+        PROPS.forEach(prop => {
+          const row = tlTracks.querySelector(`.prop-track[data-layer="${layer.id}"][data-prop="${prop}"]`);
+          if (!row) return;
+          (layer.tracks[prop] || []).forEach((kf, index) => {
+            const diamond = document.createElement('div');
+            diamond.className = 'kf';
+            if (state.selectedKf
+              && state.selectedKf.layerId === layer.id
+              && state.selectedKf.prop === prop
+              && state.selectedKf.index === index) {
+              diamond.classList.add('selected');
+            }
+            diamond.style.left = timeToX(kf.t) + 'px';
+            diamond.dataset.layer = layer.id;
+            diamond.dataset.prop = prop;
+            diamond.dataset.index = index;
+            diamond.title = `${PROP_LABELS[prop]}: ${kf.v} @ ${kf.t.toFixed(2)}s`;
+            row.appendChild(diamond);
+          });
+        });
+      });
+
+      drawRuler();
+      updatePlayhead();
+      bindTimelineEvents();
+    }
+
+    function updatePlayhead() {
+      const x = timeToX(state.currentTime);
+      tlPlayhead.style.left = x + 'px';
+      tlPlayhead.style.height = (tlTracks.scrollHeight + 24) + 'px';
+      $('#time-display').textContent = `${state.currentTime.toFixed(2)} / ${state.totalDuration.toFixed(2)} s`;
+    }
+
+    function setCurrentTime(t, apply = true) {
+      state.currentTime = Math.max(0, Math.min(state.totalDuration, t));
+      updatePlayhead();
+      if (apply) {
+        applyAllAtTime(state.currentTime);
+        updatePropsPanel();
+      }
+    }
+
+    function bindTimelineEvents() {
+      // Expand / select layer from labels
+      tlLabels.querySelectorAll('.layer-row').forEach(row => {
+        row.addEventListener('click', () => {
+          const id = row.dataset.layer;
+          state.expanded[id] = !state.expanded[id];
+          selectLayer(id);
+        });
+      });
+      tlLabels.querySelectorAll('.prop-row-tl').forEach(row => {
+        row.addEventListener('click', () => {
+          selectLayer(row.dataset.layer);
+        });
+      });
+
+      // Double-click track to add keyframe
+      tlTracks.querySelectorAll('.prop-track').forEach(row => {
+        row.addEventListener('dblclick', (e) => {
+          if (e.target.classList.contains('kf')) return;
+          const rect = tlTracksWrap.getBoundingClientRect();
+          const x = e.clientX - rect.left + tlTracksWrap.scrollLeft;
+          const t = xToTime(x);
+          const layerId = row.dataset.layer;
+          const prop = row.dataset.prop;
+          const layer = getLayer(layerId);
+          const v = currentValueForProp(layer, prop);
+          addKeyframe(layerId, prop, t, v);
+          selectLayer(layerId);
+          toast(`关键帧 ${PROP_LABELS[prop]} @ ${t.toFixed(2)}s`);
+        });
+      });
+
+      // Keyframe click / drag
+      tlTracks.querySelectorAll('.kf').forEach(kfEl => {
+        kfEl.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const layerId = kfEl.dataset.layer;
+          const prop = kfEl.dataset.prop;
+          const index = parseInt(kfEl.dataset.index, 10);
+          state.selectedKf = { layerId, prop, index };
+          selectLayer(layerId);
+          // switch to kf tab
+          $$('.tab').forEach(t => t.classList.remove('active'));
+          $$('.tab-content').forEach(c => c.classList.remove('active'));
+          $('[data-tab="kf"]').classList.add('active');
+          $('#tab-kf').classList.add('active');
+          updateKfPanel();
+          renderTimeline();
+
+          const layer = getLayer(layerId);
+          state.kfDrag = {
+            layerId, prop, index,
+            startX: e.clientX,
+            origT: layer.tracks[prop][index].t,
+          };
+          kfEl.classList.add('dragging');
+        });
+      });
+    }
+
+    // Global mouse for kf drag & scrub
+    window.addEventListener('mousemove', (e) => {
+      if (state.kfDrag) {
+        const dx = e.clientX - state.kfDrag.startX;
+        const dt = dx / state.pxPerSec;
+        let t = state.kfDrag.origT + dt;
+        t = Math.max(0, Math.min(state.totalDuration, t));
+        // snap lightly
+        t = Math.round(t * 20) / 20;
+        const layer = getLayer(state.kfDrag.layerId);
+        if (layer) {
+          layer.tracks[state.kfDrag.prop][state.kfDrag.index].t = t;
+          // don't sort while dragging — sort on mouseup
+          const kfEl = tlTracks.querySelector(
+            `.kf[data-layer="${state.kfDrag.layerId}"][data-prop="${state.kfDrag.prop}"][data-index="${state.kfDrag.index}"]`
+          );
+          if (kfEl) kfEl.style.left = timeToX(t) + 'px';
+          if (state.selectedKf) updateKfPanel();
+        }
+        return;
+      }
+      if (state.scrubbing) {
+        const rect = tlTracksWrap.getBoundingClientRect();
+        const x = e.clientX - rect.left + tlTracksWrap.scrollLeft;
+        setCurrentTime(xToTime(x));
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (state.kfDrag) {
+        const { layerId, prop } = state.kfDrag;
+        const layer = getLayer(layerId);
+        if (layer) {
+          sortTrack(layer.tracks[prop]);
+          // fix selected index after sort
+          if (state.selectedKf && state.selectedKf.layerId === layerId && state.selectedKf.prop === prop) {
+            const t = layer.tracks[prop].find(k => true); // will re-select by value match below
+          }
+          // re-find by closest time after sort — store time
+          const draggedT = state.kfDrag.origT; // outdated; read from element
+        }
+        // safer: re-select by matching time from UI
+        state.kfDrag = null;
+        renderTimeline();
+        updateKfPanel();
+      }
+      state.scrubbing = false;
+    });
+
+    // Ruler scrub
+    $('#tl-ruler').addEventListener('mousedown', (e) => {
+      state.scrubbing = true;
+      const rect = tlTracksWrap.getBoundingClientRect();
+      const x = e.clientX - rect.left + tlTracksWrap.scrollLeft;
+      setCurrentTime(xToTime(x));
+    });
+
+    // Click empty track area to scrub
+    tlTracks.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('kf')) return;
+      state.scrubbing = true;
+      const rect = tlTracksWrap.getBoundingClientRect();
+      const x = e.clientX - rect.left + tlTracksWrap.scrollLeft;
+      setCurrentTime(xToTime(x));
+    });
+
+    // Timeline zoom
+    $('#tl-zoom').addEventListener('input', (e) => {
+      state.pxPerSec = parseInt(e.target.value, 10);
+      renderTimeline();
+    });
+
+    $('#total-duration').addEventListener('change', (e) => {
+      state.totalDuration = Math.max(0.5, parseFloat(e.target.value) || 3);
+      // clamp keyframes
+      state.layers.forEach(layer => {
+        ensureTracks(layer);
+        PROPS.forEach(p => {
+          layer.tracks[p].forEach(k => {
+            if (k.t > state.totalDuration) k.t = state.totalDuration;
+          });
+        });
+      });
+      if (state.currentTime > state.totalDuration) setCurrentTime(state.totalDuration);
+      renderTimeline();
+      updatePlayhead();
+    });
+
+    // Sync scroll labels? optional — keep simple
+
+    // ==================== Playback ====================
+    function playAll() {
+      if (state.isPlaying) {
+        pauseAll();
+        return;
+      }
+      state.isPlaying = true;
+      $('#btn-play').textContent = '⏸';
+      // if at end, restart
+      if (state.currentTime >= state.totalDuration - 0.01) {
+        state.currentTime = 0;
+      }
+      state.playStart = performance.now() - state.currentTime * 1000;
+
+      function tick(now) {
+        if (!state.isPlaying) return;
+        const elapsed = (now - state.playStart) / 1000;
+        if (elapsed >= state.totalDuration) {
+          setCurrentTime(state.totalDuration);
+          // loop if any infinite-style? for now stop
+          stopAll();
+          return;
+        }
+        setCurrentTime(elapsed);
+        state.rafId = requestAnimationFrame(tick);
+      }
+      state.rafId = requestAnimationFrame(tick);
+    }
+
+    function pauseAll() {
+      state.isPlaying = false;
+      $('#btn-play').textContent = '▶';
+      if (state.rafId) cancelAnimationFrame(state.rafId);
+    }
+
+    function stopAll() {
+      pauseAll();
+      setCurrentTime(0);
+    }
+
+    $('#btn-play').addEventListener('click', playAll);
+    $('#btn-stop').addEventListener('click', stopAll);
+
+    // ==================== Canvas interaction ====================
+    function svgPoint(evt) {
+      const pt = svgStage.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      return pt.matrixTransform(svgStage.getScreenCTM().inverse());
+    }
+
+    function getPositionSnapshot(layer) {
+      const el = layer.el;
+      if (layer.type === 'circle' || layer.type === 'ellipse') {
+        return { cx: +el.getAttribute('cx'), cy: +el.getAttribute('cy') };
+      }
+      if (layer.type === 'line') {
+        return {
+          x1: +el.getAttribute('x1'), y1: +el.getAttribute('y1'),
+          x2: +el.getAttribute('x2'), y2: +el.getAttribute('y2'),
+        };
+      }
+      if (layer.type === 'text') {
+        return { x: +el.getAttribute('x'), y: +el.getAttribute('y') };
+      }
+      return { x: +el.getAttribute('x'), y: +el.getAttribute('y') };
+    }
+
+    svgStage.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const pt = svgPoint(e);
+
+      if (state.tool === 'select') {
+        const target = e.target.closest('#shapes-root > *');
+        if (target) {
+          selectLayer(target.id);
+          const layer = getLayer(target.id);
+          if (layer) {
+            state.dragging = {
+              id: layer.id,
+              startX: pt.x,
+              startY: pt.y,
+              orig: getPositionSnapshot(layer),
+            };
+            svgStage.classList.add('dragging');
+          }
+        } else {
+          selectLayer(null);
+        }
+        return;
+      }
+
+      if (['rect', 'circle', 'ellipse', 'line'].includes(state.tool)) {
+        const layer = createShape(state.tool, pt.x, pt.y, 1, 1);
+        if (!layer) return;
+        state.drawing = { type: state.tool, startX: pt.x, startY: pt.y, el: layer.el, layer };
+      } else if (state.tool === 'text') {
+        createShape('text', pt.x, pt.y);
+        $$('.tool-btn').forEach(b => b.classList.remove('active'));
+        $('[data-tool="select"]').classList.add('active');
+        state.tool = 'select';
+      }
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      // canvas drawing / dragging (timeline handlers already above)
+      const pt = svgPoint(e);
+
+      if (state.drawing) {
+        const { startX, startY, el, type } = state.drawing;
+        const dx = pt.x - startX;
+        const dy = pt.y - startY;
+        if (type === 'rect') {
+          el.setAttribute('x', Math.min(startX, pt.x));
+          el.setAttribute('y', Math.min(startY, pt.y));
+          el.setAttribute('width', Math.max(Math.abs(dx), 1));
+          el.setAttribute('height', Math.max(Math.abs(dy), 1));
+        } else if (type === 'circle') {
+          const r = Math.sqrt(dx * dx + dy * dy);
+          el.setAttribute('cx', startX);
+          el.setAttribute('cy', startY);
+          el.setAttribute('r', Math.max(r, 1));
+        } else if (type === 'ellipse') {
+          el.setAttribute('cx', startX);
+          el.setAttribute('cy', startY);
+          el.setAttribute('rx', Math.max(Math.abs(dx), 1));
+          el.setAttribute('ry', Math.max(Math.abs(dy), 1));
+        } else if (type === 'line') {
+          el.setAttribute('x1', startX);
+          el.setAttribute('y1', startY);
+          el.setAttribute('x2', pt.x);
+          el.setAttribute('y2', pt.y);
+        }
+        updateSelectionUI();
+        return;
+      }
+
+      if (state.dragging && !state.kfDrag) {
+        const layer = getLayer(state.dragging.id);
+        if (!layer) return;
+        const dx = pt.x - state.dragging.startX;
+        const dy = pt.y - state.dragging.startY;
+        const orig = state.dragging.orig;
+        const el = layer.el;
+        if (layer.type === 'circle' || layer.type === 'ellipse') {
+          el.setAttribute('cx', orig.cx + dx);
+          el.setAttribute('cy', orig.cy + dy);
+        } else if (layer.type === 'line') {
+          el.setAttribute('x1', orig.x1 + dx);
+          el.setAttribute('y1', orig.y1 + dy);
+          el.setAttribute('x2', orig.x2 + dx);
+          el.setAttribute('y2', orig.y2 + dy);
+        } else if (layer.type === 'text') {
+          el.setAttribute('x', orig.x + dx);
+          el.setAttribute('y', orig.y + dy);
+        } else {
+          el.setAttribute('x', orig.x + dx);
+          el.setAttribute('y', orig.y + dy);
+        }
+        readBase(layer);
+        updateSelectionUI();
+        updatePropsPanel();
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (state.drawing) {
+        const el = state.drawing.el;
+        const bbox = el.getBBox();
+        if (bbox.width < 3 && bbox.height < 3 && state.drawing.type !== 'line') {
+          const idx = state.layers.findIndex(l => l.id === state.drawing.layer.id);
+          if (idx !== -1) {
+            state.layers[idx].el.remove();
+            state.layers.splice(idx, 1);
+            state.selectedId = null;
+            updateLayersList();
+            updateEmptyHint();
+            renderTimeline();
+          }
+        } else {
+          readBase(state.drawing.layer);
+        }
+        state.drawing = null;
+        updatePropsPanel();
+      }
+      if (state.dragging) {
+        const layer = getLayer(state.dragging.id);
+        if (layer) readBase(layer);
+        state.dragging = null;
+        svgStage.classList.remove('dragging');
+        updatePropsPanel();
+      }
+    });
+
+    // Zoom canvas
+    function setZoom(z) {
+      state.zoom = Math.max(0.25, Math.min(3, z));
+      svgStage.style.width = (600 * state.zoom) + 'px';
+      svgStage.style.height = (400 * state.zoom) + 'px';
+      $('#zoom-label').textContent = Math.round(state.zoom * 100) + '%';
+    }
+    $('#btn-zoom-in').addEventListener('click', () => setZoom(state.zoom + 0.1));
+    $('#btn-zoom-out').addEventListener('click', () => setZoom(state.zoom - 0.1));
+    $('#btn-zoom-reset').addEventListener('click', () => setZoom(1));
+
+    $('#bg-select').addEventListener('change', (e) => {
+      const bg = $('#stage-bg');
+      if (e.target.value === 'dark') bg.setAttribute('fill', '#1a1f2b');
+      else if (e.target.value === 'light') bg.setAttribute('fill', '#f0f2f5');
+      else bg.setAttribute('fill', 'transparent');
+    });
+
+    // Import
+    $('#btn-import').addEventListener('click', () => $('#file-input').click());
+    $('#file-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+        const imported = doc.querySelector('svg');
+        if (!imported) { toast('无法解析 SVG'); return; }
+        const children = [...imported.children].filter(c =>
+          !['defs', 'style', 'title', 'desc', 'metadata'].includes(c.tagName.toLowerCase())
+        );
+        children.forEach(child => {
+          const clone = document.importNode(child, true);
+          clone.id = uid();
+          shapesRoot.appendChild(clone);
+          const type = clone.tagName.toLowerCase();
+          const layer = {
+            id: clone.id,
+            type: type === 'g' ? 'group' : type,
+            name: clone.getAttribute('data-name') || type + ' ' + (state.nextId - 1),
+            el: clone,
+            visible: true,
+            tracks: { opacity: [], x: [], y: [], rotate: [], scale: [] },
+            base: { opacity: 1, rotate: 0, scale: 1 },
+          };
+          clone.style.transformOrigin = 'center';
+          clone.style.transformBox = 'fill-box';
+          state.layers.push(layer);
+          readBase(layer);
+          state.expanded[layer.id] = false;
+        });
+        updateLayersList();
+        updateEmptyHint();
+        renderTimeline();
+        toast(`已导入 ${children.length} 个元素`);
+      } catch (err) {
+        console.error(err);
+        toast('导入失败');
+      }
+      e.target.value = '';
+    });
+
+    $('#btn-clear').addEventListener('click', () => {
+      if (!state.layers.length) return;
+      if (!confirm('确定清空所有图层？')) return;
+      stopAll();
+      state.layers.forEach(l => l.el.remove());
+      state.layers = [];
+      state.selectedId = null;
+      state.selectedKf = null;
+      state.expanded = {};
+      selectionRoot.innerHTML = '';
+      updateLayersList();
+      updatePropsPanel();
+      updateKfPanel();
+      updateEmptyHint();
+      renderTimeline();
+      toast('已清空');
+    });
+
+    // ==================== Export ====================
+    function tracksToKeyframesCSS(layer) {
+      ensureTracks(layer);
+      // Collect all unique times
+      const times = new Set([0, state.totalDuration]);
+      PROPS.forEach(p => (layer.tracks[p] || []).forEach(k => times.add(k.t)));
+      const sorted = [...times].sort((a, b) => a - b);
+
+      if (sorted.length < 2 && !PROPS.some(p => (layer.tracks[p] || []).length)) {
+        return null;
+      }
+
+      const base = layer.base || readBase(layer);
+      let css = '';
+      sorted.forEach(t => {
+        const pct = state.totalDuration > 0 ? (t / state.totalDuration) * 100 : 0;
+        const opacity = sampleTrack(layer.tracks.opacity, t, base.opacity);
+        const dx = sampleTrack(layer.tracks.x, t, 0);
+        const dy = sampleTrack(layer.tracks.y, t, 0);
+        const rot = sampleTrack(layer.tracks.rotate, t, base.rotate);
+        const sc = sampleTrack(layer.tracks.scale, t, base.scale);
+        css += `    ${pct.toFixed(2)}% {\n`;
+        css += `      opacity: ${opacity};\n`;
+        css += `      transform: translate(${dx}px, ${dy}px) rotate(${rot}deg) scale(${sc});\n`;
+        css += `    }\n`;
+      });
+      return css;
+    }
+
+    function buildExportSVG() {
+      let keyframesCSS = '';
+      let animStyles = '';
+
+      state.layers.forEach(layer => {
+        if (!layer.visible) return;
+        const body = tracksToKeyframesCSS(layer);
+        if (!body) return;
+        keyframesCSS += `  @keyframes ${layer.id}_anim {\n${body}  }\n`;
+        animStyles += `  #${layer.id} {\n    animation: ${layer.id}_anim ${state.totalDuration}s ease-in-out infinite;\n    transform-origin: center;\n    transform-box: fill-box;\n  }\n`;
+      });
+
+      // Strip live transforms from shapes for export base
+      const cloneRoot = shapesRoot.cloneNode(true);
+      cloneRoot.querySelectorAll('*').forEach(el => {
+        el.style.transform = '';
+        el.style.animation = '';
+      });
+
+      const bgFill = $('#stage-bg').getAttribute('fill');
+      const bgRect = bgFill === 'transparent' ? '' : `<rect width="100%" height="100%" fill="${bgFill}"/>`;
+
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+  <style>
+    /* Generated by SVG Animator — Keyframe Timeline */
+${keyframesCSS}
+${animStyles}
+  </style>
+  ${bgRect}
+  <g id="shapes">
+${cloneRoot.innerHTML}
+  </g>
+</svg>`;
+    }
+
+    $('#btn-export').addEventListener('click', () => {
+      $('#export-code').textContent = buildExportSVG();
+      $('#export-modal').classList.add('show');
+    });
+    $('#btn-close-modal').addEventListener('click', () => $('#export-modal').classList.remove('show'));
+    $('#export-modal').addEventListener('click', (e) => {
+      if (e.target === $('#export-modal')) $('#export-modal').classList.remove('show');
+    });
+    $('#btn-copy-code').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText($('#export-code').textContent);
+        toast('已复制到剪贴板');
+      } catch { toast('复制失败'); }
+    });
+    $('#btn-download-svg').addEventListener('click', () => {
+      const blob = new Blob([$('#export-code').textContent], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'animated.svg';
+      a.click();
+      URL.revokeObjectURL(url);
+      toast('下载已开始');
+    });
+
+    // Keyboard
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (state.selectedKf) $('#btn-delete-kf').click();
+        else if (state.selectedId) $('#btn-delete-layer').click();
+      }
+      if (e.key === ' ') { e.preventDefault(); playAll(); }
+      if (e.key === 'v' || e.key === 'V') $('[data-tool="select"]').click();
+      if (e.key === 'r' || e.key === 'R') $('[data-tool="rect"]').click();
+      if (e.key === 'c' || e.key === 'C') $('[data-tool="circle"]').click();
+      if (e.key === 't' || e.key === 'T') $('[data-tool="text"]').click();
+      // Arrow keys nudge playhead
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentTime(state.currentTime - (e.shiftKey ? 0.5 : 0.05));
+      }
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setCurrentTime(state.currentTime + (e.shiftKey ? 0.5 : 0.05));
+      }
+    });
+
+    // Resize ruler on window resize
+    window.addEventListener('resize', () => renderTimeline());
+
+    // Init
+    updateEmptyHint();
+    renderTimeline();
+    setCurrentTime(0);
+  })();
+  </script>
+</body>
+</html>
