@@ -46,6 +46,7 @@ export type CopiedKeyframe = {
 
 type DocState = {
   duration: number;
+  loop: boolean;
   time: number;
   playing: boolean;
   pxPerSec: number;
@@ -72,6 +73,7 @@ type DocState = {
 type Actions = {
   setTime: (t: number) => void;
   togglePlay: () => void;
+  toggleLoop: () => void;
   stop: () => void;
   setDuration: (d: number) => void;
   setProjectSize: (width: number, height: number) => void;
@@ -103,10 +105,23 @@ type Actions = {
     patch: Partial<
       Pick<
         Layer,
-        "fill" | "stroke" | "strokeWidth" | "text" | "fontSize" | "imageSrc" | "x" | "y" | "w" | "h"
+        | "fill"
+        | "stroke"
+        | "strokeWidth"
+        | "text"
+        | "fontSize"
+        | "fontWeight"
+        | "fontFamily"
+        | "cornerRadius"
+        | "imageSrc"
+        | "x"
+        | "y"
+        | "w"
+        | "h"
       >
     >,
   ) => void;
+  setTrack: (id: string, prop: PropKey, track: Keyframe[]) => void;
   setDisplayed: (id: string, prop: PropKey, absolute: number, forceKey?: boolean) => void;
   toggleScaleLinked: (id: string) => void;
   moveBy: (
@@ -268,6 +283,8 @@ function hydrateLayer(layer: Layer): Layer {
   return {
     ...layer,
     scaleLinked: layer.scaleLinked ?? true,
+    cornerRadius: layer.cornerRadius ?? 8,
+    fontFamily: layer.fontFamily ?? "IBM Plex Sans, Source Han Sans SC, sans-serif",
     armed: { ...emptyArmed(false), ...(layer.armed ?? {}) },
     tracks,
     rest,
@@ -324,6 +341,7 @@ const initialLayers = demoLayers();
 
 export const useDoc = create<DocState & Actions>((set, get) => ({
   duration: DEMO_DURATION,
+  loop: true,
   time: 0,
   playing: true,
   pxPerSec: 120,
@@ -352,6 +370,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     if (!playing && time >= duration - 1 / FPS) set({ time: 0, playing: true });
     else set({ playing: !playing });
   },
+  toggleLoop: () => set({ loop: !get().loop }),
   stop: () => set({ playing: false, time: 0 }),
   setDuration: (d) => {
     const duration = Math.min(30, Math.max(0.5, d));
@@ -518,13 +537,30 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   setPaint: (id, patch) =>
     set({
       layers: mapLayer(get().layers, id, (layer) => {
-        let next = { ...layer, ...patch, rest: { ...layer.rest } };
+        const next = { ...layer, ...patch, rest: { ...layer.rest } };
         if (patch.fill !== undefined) next.rest.fill = colorToNumber(patch.fill);
         if (patch.stroke !== undefined) next.rest.stroke = colorToNumber(patch.stroke);
         if (patch.strokeWidth !== undefined) next.rest.strokeWidth = patch.strokeWidth;
         return next;
       }),
     }),
+  setTrack: (id, prop, track) => {
+    const ids = new Set(track.map((key) => key.id));
+    const selectedKey = get().selectedKey;
+    set({
+      layers: mapLayer(get().layers, id, (layer) => ({
+        ...layer,
+        tracks: { ...layer.tracks, [prop]: [...track].sort((a, b) => a.t - b.t) },
+      })),
+      selectedKeys: get().selectedKeys.filter(
+        (key) => key.layerId !== id || key.prop !== prop || ids.has(key.id),
+      ),
+      selectedKey:
+        selectedKey?.layerId === id && selectedKey.prop === prop && !ids.has(selectedKey.id)
+          ? null
+          : selectedKey,
+    });
+  },
   setDisplayed: (id, prop, absolute, forceKey = false) => {
     const { time, autoKey, duration } = get();
     set({
@@ -972,6 +1008,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       layers,
       duration: DEMO_DURATION,
+      loop: true,
       projectWidth: DEMO_WIDTH,
       projectHeight: DEMO_HEIGHT,
       exportWidth: DEMO_WIDTH,
@@ -1005,6 +1042,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const projectHeight = safeDimension(doc.projectHeight ?? 500, 500);
     set({
       duration: doc.duration || 3,
+      loop: doc.loop ?? true,
       pxPerSec: doc.pxPerSec || 120,
       projectWidth,
       projectHeight,
@@ -1027,6 +1065,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   snapshot: () => {
     const {
       duration,
+      loop,
       pxPerSec,
       projectWidth,
       projectHeight,
@@ -1040,6 +1079,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     } = get();
     return {
       duration,
+      loop,
       pxPerSec,
       projectWidth,
       projectHeight,

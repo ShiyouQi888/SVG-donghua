@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Trash2 } from "lucide-react";
 import {
   DEFAULT_BEZIER,
+  FONT_FAMILIES,
   PROP_LABEL,
   colorToNumber,
   displayed,
@@ -34,9 +35,9 @@ export function Inspector() {
 
   if (!layer) {
     return (
-      <aside className="app-scrollbar max-h-52 min-h-0 w-full shrink-0 overflow-auto border-t border-border bg-surface lg:max-h-none lg:w-72 lg:border-t-0 lg:border-l">
-        <div className="p-4 text-sm text-muted">选中一个图层后，用秒表和菱形键给属性打 K。</div>
-      </aside>
+      <div className="grid min-h-36 place-items-center p-4 text-center text-xs leading-5 text-muted">
+        选中画布或时间线中的图层后，这里会显示对应属性。
+      </div>
     );
   }
 
@@ -46,7 +47,6 @@ export function Inspector() {
       : undefined;
 
   return (
-    <aside className="app-scrollbar max-h-52 min-h-0 w-full shrink-0 overflow-auto border-t border-border bg-surface lg:max-h-none lg:w-72 lg:border-t-0 lg:border-l">
       <div className="space-y-4 p-3">
         <div>
           <label className="mb-1 block text-xs text-muted" htmlFor="layer-name">
@@ -84,13 +84,57 @@ export function Inspector() {
               />
             </label>
           </div>
+          {layer.kind === "rect" && (
+            <label className="block space-y-1.5 text-xs text-muted">
+              <span className="flex items-center justify-between">
+                圆角半径
+                <input
+                  aria-label="矩形圆角"
+                  type="number"
+                  min={0}
+                  max={Math.floor(Math.min(layer.w, layer.h) / 2)}
+                  value={Math.round(Math.min(layer.cornerRadius ?? 8, Math.min(layer.w, layer.h) / 2))}
+                  onChange={(event) => {
+                    const max = Math.floor(Math.min(layer.w, layer.h) / 2);
+                    setPaint(layer.id, { cornerRadius: Math.min(max, Math.max(0, Number(event.target.value) || 0)) });
+                  }}
+                  className="w-16 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-sm text-fg"
+                />
+              </span>
+              <input
+                aria-label="矩形圆角滑块"
+                type="range"
+                min={0}
+                max={Math.max(1, Math.floor(Math.min(layer.w, layer.h) / 2))}
+                value={Math.min(layer.cornerRadius ?? 8, Math.floor(Math.min(layer.w, layer.h) / 2))}
+                onChange={(event) => setPaint(layer.id, { cornerRadius: Number(event.target.value) })}
+                className="timeline-range w-full"
+              />
+            </label>
+          )}
           {layer.kind === "text" && (
             <>
               <input
+                aria-label="文字内容"
                 value={layer.text}
                 onChange={(e) => setPaint(layer.id, { text: e.target.value })}
                 className="w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-sm"
               />
+              <label className="flex items-center justify-between gap-2 text-xs text-muted">
+                字体
+                <select
+                  aria-label="文字字体"
+                  value={layer.fontFamily ?? FONT_FAMILIES[0].value}
+                  onChange={(event) => setPaint(layer.id, { fontFamily: event.target.value })}
+                  className="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-fg"
+                >
+                  {FONT_FAMILIES.map((font) => (
+                    <option key={font.value} value={font.value}>
+                      {font.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="flex items-center gap-2 text-xs text-muted">
                 字号
                 <input
@@ -102,8 +146,58 @@ export function Inspector() {
                   className="w-20 rounded-md border border-border bg-surface-2 px-2 py-1 text-sm text-fg"
                 />
               </label>
+              <label className="flex items-center gap-2 text-xs text-muted">
+                字重
+                <select
+                  aria-label="文字字重"
+                  value={layer.fontWeight ?? 600}
+                  onChange={(event) => setPaint(layer.id, { fontWeight: Number(event.target.value) })}
+                  className="rounded-md border border-border bg-surface-2 px-2 py-1 text-sm text-fg"
+                >
+                  {[300, 400, 500, 600, 700, 800].map((weight) => (
+                    <option key={weight} value={weight}>
+                      {weight}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </>
           )}
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex min-w-0 items-center gap-2 text-xs text-muted">
+              填充
+              <input
+                aria-label="填充颜色"
+                type="color"
+                value={layer.fill === "none" ? "#000000" : layer.fill}
+                onChange={(event) => setPaint(layer.id, { fill: event.target.value })}
+                className="h-7 min-w-0 flex-1 cursor-pointer rounded border border-border bg-surface-2 p-0.5"
+              />
+            </label>
+            <label className="flex min-w-0 items-center gap-2 text-xs text-muted">
+              描边
+              <input
+                aria-label="描边颜色"
+                type="color"
+                value={layer.stroke === "none" ? "#000000" : layer.stroke}
+                onChange={(event) => setPaint(layer.id, { stroke: event.target.value })}
+                className="h-7 min-w-0 flex-1 cursor-pointer rounded border border-border bg-surface-2 p-0.5"
+              />
+            </label>
+          </div>
+          <label className="flex items-center justify-between gap-2 text-xs text-muted">
+            描边粗细
+            <input
+              aria-label="描边粗细"
+              type="number"
+              min={0}
+              max={80}
+              step={0.5}
+              value={layer.strokeWidth}
+              onChange={(event) => setPaint(layer.id, { strokeWidth: Math.max(0, Number(event.target.value) || 0) })}
+              className="w-20 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-sm text-fg"
+            />
+          </label>
         </section>
 
         {keyMeta && selectedKey && (
@@ -205,7 +299,6 @@ export function Inspector() {
           删除图层
         </button>
       </div>
-    </aside>
   );
 }
 

@@ -23,6 +23,7 @@ import {
   Maximize2,
   Pause,
   Play,
+  Repeat,
   ScanLine,
   Spline,
   Trash2,
@@ -147,6 +148,7 @@ export function Timeline() {
   const selectedId = useDoc((s) => s.selectedId);
   const selectedKeys = useDoc((s) => s.selectedKeys);
   const playing = useDoc((s) => s.playing);
+  const loop = useDoc((s) => s.loop);
   const autoKey = useDoc((s) => s.autoKey);
   const snapEnabled = useDoc((s) => s.snapEnabled);
   const safeArea = useDoc((s) => s.safeArea);
@@ -154,6 +156,7 @@ export function Timeline() {
   const motionBlurStrength = useDoc((s) => s.motionBlurStrength);
   const setTime = useDoc((s) => s.setTime);
   const togglePlay = useDoc((s) => s.togglePlay);
+  const toggleLoop = useDoc((s) => s.toggleLoop);
   const stop = useDoc((s) => s.stop);
   const setDuration = useDoc((s) => s.setDuration);
   const setPx = useDoc((s) => s.setPx);
@@ -467,6 +470,17 @@ export function Timeline() {
             />
             s
           </label>
+          <button
+            type="button"
+            aria-label={loop ? "关闭动画循环" : "开启动画循环"}
+            aria-pressed={loop}
+            title={loop ? "循环播放已开启，点击改为播放一次" : "播放一次，点击开启循环播放"}
+            onClick={toggleLoop}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-md border px-2 text-xs transition-colors ${loop ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted hover:bg-surface-2 hover:text-fg"}`}
+          >
+            <Repeat className="size-3.5" />
+            循环
+          </button>
           <label className="flex items-center gap-1 text-xs text-muted">
             缩放
             <input

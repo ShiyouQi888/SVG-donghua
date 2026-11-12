@@ -18,6 +18,7 @@ import { Stage } from "./Stage";
 import { Timeline } from "./Timeline";
 import { ExportDialog } from "./ExportDialog";
 import { ProjectPanel } from "./ProjectPanel";
+import { RightPanel } from "./RightPanel.tsx";
 
 const TOOLS: { id: Tool; label: string; icon: typeof MousePointer2 }[] = [
   { id: "select", label: "选择", icon: MousePointer2 },
@@ -104,11 +105,28 @@ export function Editor() {
 
   useEffect(() => {
     let timer = 0;
-    const unsub = useDoc.subscribe((state) => {
+    const unsub = useDoc.subscribe((state, previous) => {
+      if (
+        state.duration === previous.duration &&
+        state.loop === previous.loop &&
+        state.pxPerSec === previous.pxPerSec &&
+        state.projectWidth === previous.projectWidth &&
+        state.projectHeight === previous.projectHeight &&
+        state.exportWidth === previous.exportWidth &&
+        state.exportHeight === previous.exportHeight &&
+        state.safeArea === previous.safeArea &&
+        state.snapEnabled === previous.snapEnabled &&
+        state.motionBlur === previous.motionBlur &&
+        state.motionBlurStrength === previous.motionBlurStrength &&
+        state.layers === previous.layers
+      ) {
+        return;
+      }
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         saveSnapshot({
           duration: state.duration,
+          loop: state.loop,
           pxPerSec: state.pxPerSec,
           projectWidth: state.projectWidth,
           projectHeight: state.projectHeight,
@@ -136,9 +154,16 @@ export function Editor() {
       last = now;
       const state = useDoc.getState();
       if (state.playing) {
-        let next = state.time + dt;
-        if (next >= state.duration) next = 0;
-        state.setTime(next);
+        const next = state.time + dt;
+        if (next >= state.duration) {
+          if (state.loop) state.setTime(0);
+          else {
+            state.setTime(state.duration);
+            state.togglePlay();
+          }
+        } else {
+          state.setTime(next);
+        }
       }
       raf = requestAnimationFrame(loop);
     };
@@ -337,9 +362,10 @@ export function Editor() {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <div className="relative flex min-h-0 flex-1 flex-col md:flex-row">
           <ProjectPanel onPlaceAsset={(assetId) => void placeProjectAsset(assetId)} />
           <Stage onPlaceAsset={(assetId, position) => void placeProjectAsset(assetId, position)} />
+          <RightPanel />
         </div>
       </div>
       <Timeline />

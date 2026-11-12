@@ -88,7 +88,7 @@ function fallbackImageType(file: File): string {
 export async function saveProjectAsset(file: File): Promise<ProjectAssetRecord> {
   const name = file.name.trim() || "未命名素材";
   let blob: Blob = file;
-  let mimeType = isSvg(file) ? "image/svg+xml" : fallbackImageType(file);
+  const mimeType = isSvg(file) ? "image/svg+xml" : fallbackImageType(file);
   let width = 0;
   let height = 0;
 

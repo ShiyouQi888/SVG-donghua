@@ -80,6 +80,28 @@
   stroke-dasharray: 3 5;
 }
 
+.right-panel-desktop {
+  display: none;
+}
+
+.right-panel-mobile {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 40;
+  max-width: calc(100% - 16px);
+}
+
+@media (min-width: 48rem) {
+  .right-panel-desktop {
+    display: flex;
+  }
+
+  .right-panel-mobile {
+    display: none;
+  }
+}
+
 .stage-snap-guide {
   stroke: var(--color-key);
   stroke-width: 1px;

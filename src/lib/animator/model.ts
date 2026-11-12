@@ -27,6 +27,15 @@ export type BezierCurve = { x1: number; y1: number; x2: number; y2: number };
 export type ShapeKind = "rect" | "circle" | "ellipse" | "text" | "image" | "star" | "path";
 export type DrawShapeKind = Exclude<ShapeKind, "image" | "path">;
 export type Tool = "select" | "pen" | DrawShapeKind;
+export const DEFAULT_FONT_FAMILY = "IBM Plex Sans, Source Han Sans SC, sans-serif";
+export const FONT_FAMILIES = [
+  { label: "思源黑体 / 无衬线", value: "IBM Plex Sans, Source Han Sans SC, sans-serif" },
+  { label: "系统黑体", value: "Arial, 'Microsoft YaHei', sans-serif" },
+  { label: "Noto Sans", value: "'Noto Sans SC', sans-serif" },
+  { label: "优雅衬线", value: "Georgia, 'Noto Serif SC', serif" },
+  { label: "等宽代码", value: "'IBM Plex Mono', 'Noto Sans Mono CJK SC', monospace" },
+  { label: "展示粗体", value: "Impact, 'Microsoft YaHei', sans-serif" },
+] as const;
 export type VectorPathPoint = {
   x: number;
   y: number;
@@ -73,6 +82,8 @@ export type Layer = {
   text: string;
   fontSize: number;
   fontWeight?: number;
+  fontFamily?: string;
+  cornerRadius?: number;
   imageSrc?: string;
   /** Normalized anchor positions and tangent handles for custom pen paths. */
   path?: VectorPathPoint[];
@@ -88,6 +99,7 @@ export type Layer = {
 
 export type PersistedDoc = {
   duration: number;
+  loop?: boolean;
   pxPerSec: number;
   projectWidth?: number;
   projectHeight?: number;
@@ -492,6 +504,8 @@ export function makeLayer(kind: ShapeKind, x: number, y: number, n: number): Lay
     text: "金帧",
     fontSize: 28,
     fontWeight: 600,
+    fontFamily: DEFAULT_FONT_FAMILY,
+    cornerRadius: 8,
     x: x - size.w / 2,
     y: y - size.h / 2,
     w: size.w,
@@ -872,9 +886,10 @@ function layerMarkup(layer: Layer, t: number, animated: boolean, filterId?: stri
     return `<path ${common} d="${layerPathData(layer)}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linejoin="round" stroke-linecap="round"/>`;
   }
   if (layer.kind === "text") {
-    return `<text ${common} x="${layer.x + layer.w / 2}" y="${layer.y + layer.h / 2}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" font-size="${layer.fontSize}" font-weight="${layer.fontWeight ?? 600}" font-family="sans-serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(layer.text)}</text>`;
+    return `<text ${common} x="${layer.x + layer.w / 2}" y="${layer.y + layer.h / 2}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" font-size="${layer.fontSize}" font-weight="${layer.fontWeight ?? 600}" font-family="${escapeXml(layer.fontFamily ?? DEFAULT_FONT_FAMILY)}" text-anchor="middle" dominant-baseline="middle">${escapeXml(layer.text)}</text>`;
   }
-  return `<rect ${common} x="${layer.x}" y="${layer.y}" width="${layer.w}" height="${layer.h}" rx="8" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"/>`;
+  const radius = Math.min(Math.max(0, layer.cornerRadius ?? 8), Math.min(layer.w, layer.h) / 2);
+  return `<rect ${common} x="${layer.x}" y="${layer.y}" width="${layer.w}" height="${layer.h}" rx="${radius}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"/>`;
 }
 
 function escapeXml(s: string): string {

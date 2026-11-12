@@ -10,6 +10,7 @@ import {
 import { Maximize2, Minus, Plus } from "lucide-react";
 import {
   displayed,
+  DEFAULT_FONT_FAMILY,
   keyNear,
   layerPathData,
   motionBlurFilterRegion,
@@ -227,7 +228,7 @@ function ShapeBody({ layer, time }: { layer: Layer; time: number }) {
         strokeWidth={strokeWidth}
         fontSize={layer.fontSize}
         fontWeight={layer.fontWeight ?? 600}
-        fontFamily="IBM Plex Sans, Source Han Sans SC, sans-serif"
+        fontFamily={layer.fontFamily ?? DEFAULT_FONT_FAMILY}
         textAnchor="middle"
         dominantBaseline="middle"
       >
@@ -241,7 +242,7 @@ function ShapeBody({ layer, time }: { layer: Layer; time: number }) {
       y={layer.y}
       width={layer.w}
       height={layer.h}
-      rx={8}
+      rx={Math.min(Math.max(0, layer.cornerRadius ?? 8), Math.min(layer.w, layer.h) / 2)}
       fill={fill}
       stroke={stroke}
       strokeWidth={strokeWidth}
