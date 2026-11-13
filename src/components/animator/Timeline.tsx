@@ -57,8 +57,10 @@ import { KeyNav } from "./KeyNav";
 
 const LABEL_W = 280;
 const FIT_MODE_KEY = "kairo-timeline-zoom-mode";
+const TIME_DISPLAY_KEY = "kairo-timeline-time-display";
 const HEIGHT_KEY = "kairo-timeline-height";
 const MIN_TIMELINE_HEIGHT = 160;
+type TimeDisplayMode = "timecode" | "frames";
 type TimelineProp = PropKey | "position" | "scaleVector";
 const TIMELINE_TRANSFORM_PROPS: TimelineProp[] = [
   "opacity",
@@ -119,6 +121,16 @@ function xToTime(x: number, pxPerSecond: number, duration: number, fps: number):
   return snapTime(x / pxPerSecond, duration, fps);
 }
 
+function formatTimelineTime(time: number, fps: number, mode: TimeDisplayMode): string {
+  if (mode === "frames") return `${Math.max(0, Math.round(time * fps))} 帧`;
+  return fmtTime(time, fps);
+}
+
+function formatRulerTime(frame: number, fps: number, mode: TimeDisplayMode): string {
+  if (mode === "frames") return String(frame);
+  return fmtRulerTime(frame / fps, fps);
+}
+
 export function Timeline() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrub = useRef(false);
@@ -131,6 +143,8 @@ export function Timeline() {
   const [viewportWidth, setViewportWidth] = useState(0);
   const [fitWidth, setFitWidth] = useState(true);
   const [timelineHeight, setTimelineHeight] = useState<number | null>(null);
+  const [timeDisplayMode, setTimeDisplayMode] = useState<TimeDisplayMode>("timecode");
+  const [timeDisplayReady, setTimeDisplayReady] = useState(false);
 
   useEffect(() => {
     let savedHeight = Number.NaN;
@@ -157,6 +171,25 @@ export function Timeline() {
       // The default fit mode still works when storage is unavailable.
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(TIME_DISPLAY_KEY);
+      if (stored === "frames" || stored === "timecode") setTimeDisplayMode(stored);
+    } catch {
+      // Timecode remains the default when storage is unavailable.
+    }
+    setTimeDisplayReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!timeDisplayReady) return;
+    try {
+      window.localStorage.setItem(TIME_DISPLAY_KEY, timeDisplayMode);
+    } catch {
+      // The display mode still works for the current session.
+    }
+  }, [timeDisplayMode, timeDisplayReady]);
   const layers = useDoc((s) => s.layers);
   const expanded = useDoc((s) => s.expanded);
   const duration = useDoc((s) => s.duration);
@@ -408,10 +441,10 @@ export function Timeline() {
           停
         </button>
         <span
-          aria-label={`当前时间 ${fmtTime(time, fps)}，总时长 ${fmtTime(duration, fps)}，${fps}fps`}
+          aria-label={`当前时间 ${formatTimelineTime(time, fps, timeDisplayMode)}，总时长 ${formatTimelineTime(duration, fps, timeDisplayMode)}，${fps}fps`}
           className="font-mono text-xs text-muted tabular-nums"
         >
-          {fmtTime(time, fps)} / {fmtTime(duration, fps)} · {fps}fps
+          {formatTimelineTime(time, fps, timeDisplayMode)} / {formatTimelineTime(duration, fps, timeDisplayMode)} · {fps}fps
         </span>
         <button
           type="button"
@@ -684,7 +717,34 @@ export function Timeline() {
               className="sticky left-0 z-30 flex shrink-0 items-center gap-1 border-r border-border bg-surface-2 px-2 text-xs text-muted"
               style={{ width: labelWidth }}
             >
-              <span className="mr-auto whitespace-nowrap">图层 / 变换</span>
+              <span className="mr-1 whitespace-nowrap">
+                <span className="hidden min-[640px]:inline">图层 / 变换</span>
+                <span className="min-[640px]:hidden">图层</span>
+              </span>
+              <div
+                role="group"
+                aria-label="时间显示方式"
+                className="flex shrink-0 items-center rounded-md border border-border bg-bg/55 p-0.5"
+              >
+                <button
+                  type="button"
+                  aria-pressed={timeDisplayMode === "timecode"}
+                  title="以时间码显示播放头和标尺"
+                  onClick={() => setTimeDisplayMode("timecode")}
+                  className={`h-5 rounded px-1 text-[10px] transition-colors focus-visible:outline-2 focus-visible:outline-primary ${timeDisplayMode === "timecode" ? "bg-primary/15 text-primary" : "text-muted hover:text-fg"}`}
+                >
+                  时间码
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={timeDisplayMode === "frames"}
+                  title="以帧数显示播放头和标尺"
+                  onClick={() => setTimeDisplayMode("frames")}
+                  className={`h-5 rounded px-1 text-[10px] transition-colors focus-visible:outline-2 focus-visible:outline-primary ${timeDisplayMode === "frames" ? "bg-primary/15 text-primary" : "text-muted hover:text-fg"}`}
+                >
+                  帧
+                </button>
+              </div>
               <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1">
                 <button
                   type="button"
@@ -728,7 +788,13 @@ export function Timeline() {
                 </button>
               </div>
             </div>
-            <Ruler duration={duration} fps={fps} px={timelinePx} width={width} />
+            <Ruler
+              duration={duration}
+              fps={fps}
+              px={timelinePx}
+              width={width}
+              timeDisplayMode={timeDisplayMode}
+            />
           </div>
 
           {layers.length === 0 && (
@@ -855,6 +921,7 @@ export function Timeline() {
                                 width={width}
                                 px={timelinePx}
                                 labelWidth={labelWidth}
+                                timeDisplayMode={timeDisplayMode}
                                 selected={selectedKeys.filter((key) => key.layerId === layer.id)}
                                 onContextMenu={onContextMenu}
                                 onBeginMove={beginKeyMove}
@@ -869,6 +936,7 @@ export function Timeline() {
                               width={width}
                               px={timelinePx}
                               labelWidth={labelWidth}
+                              timeDisplayMode={timeDisplayMode}
                               selected={selectedKeys
                                 .filter((key) => key.layerId === layer.id && key.prop === prop)
                                 .map((key) => key.id)}
@@ -1063,7 +1131,19 @@ function TimelineLayerName({
   );
 }
 
-function Ruler({ duration, fps, px, width }: { duration: number; fps: number; px: number; width: number }) {
+function Ruler({
+  duration,
+  fps,
+  px,
+  width,
+  timeDisplayMode,
+}: {
+  duration: number;
+  fps: number;
+  px: number;
+  width: number;
+  timeDisplayMode: TimeDisplayMode;
+}) {
   const lastFrame = Math.max(0, Math.round(duration * fps));
   const pxPerFrame = px / fps;
   const baseSteps = [1, 2, 3, 6, 15, 30, 60, 90, 150, 300, 600, 900];
@@ -1102,10 +1182,10 @@ function Ruler({ duration, fps, px, width }: { duration: number; fps: number; px
             />
             {label && (
               <span
-                title={fmtTime(time, fps)}
+                title={formatTimelineTime(time, fps, timeDisplayMode)}
                 className="absolute left-1 top-0.5 whitespace-nowrap font-mono text-xs text-muted"
               >
-                {fmtRulerTime(time, fps)}
+                {formatRulerTime(frame, fps, timeDisplayMode)}
               </span>
             )}
           </span>
@@ -1121,6 +1201,7 @@ function PropTrack({
   width,
   px,
   labelWidth,
+  timeDisplayMode,
   selected,
   onContextMenu,
   onBeginMove,
@@ -1130,6 +1211,7 @@ function PropTrack({
   width: number;
   px: number;
   labelWidth: number;
+  timeDisplayMode: TimeDisplayMode;
   selected: string[];
   onContextMenu: (keys: SelectedKey[], x: number, y: number) => void;
   onBeginMove: (
@@ -1198,8 +1280,8 @@ function PropTrack({
             data-key-id={kf.id}
             data-layer-id={layerId}
             data-prop={prop}
-            aria-label={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t, fps)}`}
-            title={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t, fps)} · ${kf.interp}`}
+            aria-label={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${formatTimelineTime(kf.t, fps, timeDisplayMode)}`}
+            title={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${formatTimelineTime(kf.t, fps, timeDisplayMode)} · ${kf.interp}`}
             className={`tl-key interp-${kf.interp} ${selected.includes(kf.id) || live?.id === kf.id ? "is-selected" : ""}`}
             style={{ left: timeToX(kf.t, px, fps) }}
             onContextMenu={(event) => {
@@ -1221,6 +1303,7 @@ function VectorTrack({
   width,
   px,
   labelWidth,
+  timeDisplayMode,
   selected,
   onContextMenu,
   onBeginMove,
@@ -1230,6 +1313,7 @@ function VectorTrack({
   width: number;
   px: number;
   labelWidth: number;
+  timeDisplayMode: TimeDisplayMode;
   selected: SelectedKey[];
   onContextMenu: (keys: SelectedKey[], x: number, y: number) => void;
   onBeginMove: (
@@ -1381,8 +1465,8 @@ function VectorTrack({
               data-key-id={marker.primary?.id ?? marker.secondary?.id}
               data-layer-id={layerId}
               data-prop={primary}
-              aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t, fps)}`}
-              title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t, fps)} · ${interpolation}`}
+              aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${formatTimelineTime(marker.t, fps, timeDisplayMode)}`}
+              title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${formatTimelineTime(marker.t, fps, timeDisplayMode)} · ${interpolation}`}
               className={`tl-key interp-${interpolation} ${active ? "is-selected" : ""}`}
               style={{ left: timeToX(marker.t, px, fps) }}
               onContextMenu={(event) => {
