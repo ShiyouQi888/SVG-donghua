@@ -16,12 +16,14 @@ function PanelTabs({
   compact?: boolean;
 }) {
   return (
-    <div className={`flex items-center gap-1 ${compact ? "flex-1" : "px-2 pt-2"}`}>
+    <div
+      className={`flex items-center gap-1 ${compact ? "flex-1" : "border-b border-border/75 px-2 pt-2"}`}
+    >
       <button
         type="button"
         aria-pressed={tab === "properties"}
         onClick={() => onChange("properties")}
-        className={`flex h-8 flex-1 items-center justify-center gap-1 rounded-md px-2 text-[11px] ${tab === "properties" ? "bg-primary/10 text-primary" : "text-muted hover:bg-surface-2 hover:text-fg"}`}
+        className={`flex h-9 flex-1 items-center justify-center gap-1.5 rounded-t-md border-b-2 px-2 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-primary ${tab === "properties" ? "border-primary bg-primary/5 text-primary" : "border-transparent text-muted hover:bg-surface-2/60 hover:text-fg"}`}
       >
         <SlidersHorizontal className="size-3.5" />
         属性
@@ -30,7 +32,7 @@ function PanelTabs({
         type="button"
         aria-pressed={tab === "templates"}
         onClick={() => onChange("templates")}
-        className={`flex h-8 flex-1 items-center justify-center gap-1 rounded-md px-2 text-[11px] ${tab === "templates" ? "bg-primary/10 text-primary" : "text-muted hover:bg-surface-2 hover:text-fg"}`}
+        className={`flex h-9 flex-1 items-center justify-center gap-1.5 rounded-t-md border-b-2 px-2 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-primary ${tab === "templates" ? "border-primary bg-primary/5 text-primary" : "border-transparent text-muted hover:bg-surface-2/60 hover:text-fg"}`}
       >
         <Layers3 className="size-3.5" />
         模板
@@ -70,17 +72,17 @@ export function RightPanel() {
     <>
       <aside
         aria-label="属性与模板面板"
-        className="right-panel-desktop app-scrollbar min-h-0 w-72 shrink-0 flex-col border-l border-border bg-surface"
+        className="right-panel-desktop app-scrollbar min-h-0 w-72 shrink-0 flex-col border-l border-border bg-surface/95"
       >
         <PanelTabs tab={tab} onChange={setTab} />
-        <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto border-t border-border/70">
+        <div className="app-scrollbar min-h-0 flex-1 overflow-y-auto">
           {!isMobile && <PanelBody tab={tab} />}
         </div>
       </aside>
 
       <div className="right-panel-mobile">
         {mobileOpen ? (
-          <section className="flex max-h-[52vh] w-[min(90vw,360px)] flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-2xl">
+          <section className="flex max-h-[52vh] w-[min(90vw,360px)] flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-2xl">
             <header className="flex items-center gap-1 border-b border-border p-1.5">
               <PanelTabs tab={tab} onChange={setTab} compact />
               <button

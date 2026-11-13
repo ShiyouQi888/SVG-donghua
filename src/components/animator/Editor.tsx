@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import {
   Circle,
-  Maximize2,
   MousePointer2,
   PenTool,
   Redo2,
+  Settings2,
   Square,
   Star,
   Type,
@@ -326,23 +326,35 @@ export function Editor() {
             />
           </label>
           <details className="relative">
-            <summary className="flex list-none items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-              <Maximize2 className="size-3.5" />
-              <span className="hidden sm:inline">画布</span>
+            <summary
+              title="项目设置：尺寸、时长、帧率和导出尺寸"
+              className="flex list-none items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-fg focus-visible:outline-2 focus-visible:outline-primary [&::-webkit-details-marker]:hidden"
+            >
+              <Settings2 className="size-3.5" />
+              <span className="hidden sm:inline">项目设置</span>
               <span className="font-mono">
                 {projectWidth}×{projectHeight}
               </span>
             </summary>
-            <div className="absolute right-0 top-full z-50 mt-2 w-80 space-y-3 rounded-lg border border-border bg-surface p-3 shadow-2xl">
+            <div className="absolute right-0 top-full z-50 mt-2 w-80 space-y-3 rounded-xl border border-border bg-surface p-3.5 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-border/80 pb-2.5">
+                <div>
+                  <h2 className="text-sm font-semibold text-fg">项目设置</h2>
+                  <p className="mt-0.5 text-[10px] text-muted">画面、播放与导出规格</p>
+                </div>
+                <span className="rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-[10px] text-muted">
+                  {projectWidth} × {projectHeight}
+                </span>
+              </div>
               <SizeRow
-                title="项目尺寸"
+                title="画面尺寸"
                 width={projectWidth}
                 height={projectHeight}
                 onChange={setProjectSize}
               />
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-fg">常用画布预设</span>
+                  <span className="text-xs font-medium text-fg">尺寸预设</span>
                   <span className="text-[10px] text-muted">点选即应用</span>
                 </div>
                 <div className="grid grid-cols-2 gap-1.5">
@@ -376,7 +388,7 @@ export function Editor() {
                       max={30}
                       step={0.5}
                       value={duration}
-                      aria-label="画布动画时长"
+                      aria-label="项目动画时长"
                       onChange={(event) => {
                         if (event.target.value !== "") setDuration(Number(event.target.value));
                       }}
@@ -386,9 +398,9 @@ export function Editor() {
                   </span>
                 </label>
                 <label className="flex flex-col gap-1 text-xs text-muted">
-                  帧率
+                  项目帧率
                   <select
-                    aria-label="画布帧率"
+                    aria-label="项目帧率"
                     value={fps}
                     onChange={(event) => setFps(Number(event.target.value))}
                     className="w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-sm text-fg"

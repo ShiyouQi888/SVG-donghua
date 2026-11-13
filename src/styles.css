@@ -307,6 +307,32 @@
   border-radius: 2px;
 }
 
+.inspector-color-input {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 3px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface-2);
+  cursor: pointer;
+}
+
+.inspector-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.inspector-color-input::-webkit-color-swatch {
+  border: 0;
+  border-radius: 3px;
+}
+
+.inspector-color-input::-moz-color-swatch {
+  border: 0;
+  border-radius: 3px;
+}
+
 .k-diamond {
   width: 0.7rem;
   height: 0.7rem;
