@@ -54,6 +54,7 @@ import {
   useDoc,
 } from "@/lib/animator/store";
 import { KeyNav } from "./KeyNav";
+import { TimelineClip } from "./TimelineClip";
 
 const LABEL_W = 280;
 const FIT_MODE_KEY = "kairo-timeline-zoom-mode";
@@ -867,7 +868,19 @@ export function Timeline() {
                       <span className="mr-1 font-mono text-xs text-key">{keyCount}</span>
                     )}
                   </div>
-                  <div className="relative h-full" style={{ width }} />
+                  <div
+                    className="timeline-track-grid relative h-full"
+                    style={{ width, backgroundSize: `${timelinePx}px 100%` }}
+                  >
+                    <TimelineClip
+                      layer={layer}
+                      duration={duration}
+                      fps={fps}
+                      px={timelinePx}
+                      selected={layer.id === selectedId}
+                      timeDisplayMode={timeDisplayMode}
+                    />
+                  </div>
                 </div>
                 {open &&
                   groups.map((group) => (
@@ -1264,8 +1277,8 @@ function PropTrack({
       </div>
       <div
         data-track-area
-        className="relative h-full"
-        style={{ width }}
+        className="timeline-track-grid relative h-full"
+        style={{ width, backgroundSize: `${px}px 100%` }}
         onDoubleClick={(event) => {
           event.stopPropagation();
           const scroller = event.currentTarget.closest(".overflow-auto") as HTMLElement | null;
@@ -1416,8 +1429,8 @@ function VectorTrack({
       </div>
       <div
         data-track-area
-        className="relative h-full"
-        style={{ width }}
+        className="timeline-track-grid relative h-full"
+        style={{ width, backgroundSize: `${px}px 100%` }}
         onDoubleClick={(event) => {
           event.stopPropagation();
           const scroller = event.currentTarget.closest(".overflow-auto") as HTMLElement | null;

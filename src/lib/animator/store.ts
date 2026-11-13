@@ -23,6 +23,7 @@ import {
   emptyArmed,
   emptyTracks,
   keyNear,
+  layerClipRange,
   makeLayer,
   nid,
   normalizeFrameRate,
@@ -100,6 +101,7 @@ type Actions = {
   addPath: (points: VectorPathPoint[], closed?: boolean) => void;
   setPathPoint: (id: string, index: number, point: VectorPathPoint) => void;
   moveLayer: (id: string, direction: "forward" | "backward" | "front" | "back") => void;
+  setLayerClipRange: (id: string, inPoint: number, outPoint: number) => void;
   setMotionHandle: (id: string, keyId: string, side: "in" | "out", offset: MotionTangent) => void;
   deleteLayer: (id: string) => void;
   toggleVisible: (id: string) => void;
@@ -399,6 +401,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   stop: () => set({ playing: false, time: 0 }),
   setDuration: (d) => {
     const duration = Number.isFinite(d) ? Math.min(30, Math.max(0.5, d)) : get().duration;
+    const fps = get().fps;
+    const latestIn = Math.max(0, Math.floor(duration * fps + 1e-6) - 1) / fps;
     set({
       duration,
       time: Math.min(get().time, duration),
@@ -407,7 +411,13 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         for (const prop of PROPS) {
           tracks[prop] = layer.tracks[prop].map((k) => ({ ...k, t: Math.min(k.t, duration) }));
         }
-        return { ...layer, tracks };
+        const clipIn = layer.clipIn === undefined ? undefined : Math.min(layer.clipIn, latestIn);
+        const clipOut = layer.clipOut === undefined ? undefined : Math.min(layer.clipOut, duration);
+        const safeIn =
+          clipIn !== undefined && clipOut !== undefined && clipOut < clipIn + 1 / fps
+            ? Math.max(0, clipOut - 1 / fps)
+            : clipIn;
+        return { ...layer, clipIn: safeIn, clipOut, tracks };
       }),
     });
   },
@@ -534,6 +544,27 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const [layer] = layers.splice(from, 1);
     layers.splice(to, 0, layer);
     set({ layers });
+  },
+  setLayerClipRange: (id, requestedIn, requestedOut) => {
+    const state = get();
+    const { duration, fps } = state;
+    const layer = state.layers.find((item) => item.id === id);
+    if (!layer) return;
+    const frame = 1 / fps;
+    const latestIn = Math.max(0, Math.floor(duration * fps + 1e-6) - 1) / fps;
+    const inPoint = Math.min(latestIn, Math.max(0, snapTime(requestedIn, duration, fps)));
+    const snappedOut =
+      requestedOut >= duration ? duration : snapTime(requestedOut, duration, fps);
+    const outPoint = Math.min(duration, Math.max(inPoint + frame, snappedOut));
+    const current = layerClipRange(layer, duration, fps);
+    if (Math.abs(current.inPoint - inPoint) < 1e-6 && Math.abs(current.outPoint - outPoint) < 1e-6) return;
+    set({
+      layers: mapLayer(get().layers, id, (layer) => ({
+        ...layer,
+        clipIn: inPoint <= 1e-6 ? undefined : inPoint,
+        clipOut: outPoint >= duration - 1e-6 ? undefined : outPoint,
+      })),
+    });
   },
   setMotionHandle: (id, keyId, side, offset) => {
     const field = side === "in" ? "motionIn" : "motionOut";

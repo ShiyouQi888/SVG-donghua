@@ -11,6 +11,7 @@ import { Maximize2, Minus, Plus } from "lucide-react";
 import {
   displayed,
   DEFAULT_FONT_FAMILY,
+  layerIsActive,
   keyNear,
   layerPathData,
   motionBlurFilterRegion,
@@ -548,7 +549,7 @@ export function Stage({
   const blurByLayer = new Map(
     motionBlur
       ? layers
-          .filter((layer) => layer.visible)
+          .filter((layer) => layer.visible && layerIsActive(layer, time, duration, fps))
           .map(
             (layer) =>
               [layer.id, motionBlurVector(layer, time, duration, motionBlurStrength, fps)] as const,
@@ -995,6 +996,7 @@ export function Stage({
           {layers.map((layer) => {
             const p = pose(layer, time, fps);
             const selected = layer.id === selectedId;
+            const clipActive = layerIsActive(layer, time, duration, fps);
             const allHandles = [
               { id: "nw", x: layer.x - 4, y: layer.y - 4, hx: -1, hy: -1, cursor: "nwse-resize" },
               {
@@ -1063,7 +1065,10 @@ export function Stage({
                 key={layer.id}
                 data-layer-id={layer.id}
                 transform={svgTransform(layer, time, fps)}
-                style={{ pointerEvents: layer.visible ? "auto" : "none" }}
+                style={{
+                  pointerEvents: layer.visible && clipActive ? "auto" : "none",
+                  visibility: layer.visible && clipActive ? "visible" : "hidden",
+                }}
                 onPointerDown={(event) => {
                   if (tool !== "select") return;
                   event.stopPropagation();
@@ -1303,7 +1308,7 @@ export function Stage({
               ))}
             </g>
           )}
-          {selectedLayer && motionPath && (
+          {selectedLayer && layerIsActive(selectedLayer, time, duration, fps) && motionPath && (
             <g className="stage-motion-path-overlay" pointerEvents="none" aria-hidden="true">
               {motionPath.pathData && motionPath.keyframes.length > 1 && (
                 <path className="stage-motion-path-line" d={motionPath.pathData} />

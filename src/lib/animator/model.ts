@@ -83,6 +83,9 @@ export type Layer = {
   kind: ShapeKind;
   name: string;
   visible: boolean;
+  /** Composition-time trim range; omitted ends follow the project boundaries. */
+  clipIn?: number;
+  clipOut?: number;
   scaleLinked?: boolean;
   fill: string;
   stroke: string;
@@ -200,6 +203,28 @@ function blendColor(from: number, to: number, amount: number): number {
 export function snapTime(t: number, duration: number, fps = DEFAULT_FPS): number {
   const f = Math.round(t * fps) / fps;
   return Math.min(duration, Math.max(0, f));
+}
+
+export function layerClipRange(
+  layer: Layer,
+  duration: number,
+  fps = DEFAULT_FPS,
+): { inPoint: number; outPoint: number } {
+  const frame = 1 / fps;
+  const lastStartFrame = Math.max(0, Math.floor(duration * fps + 1e-6) - 1);
+  const maxIn = lastStartFrame / fps;
+  const inPoint = Math.min(maxIn, snapTime(layer.clipIn ?? 0, duration, fps));
+  const requestedOut = layer.clipOut ?? duration;
+  const outPoint =
+    requestedOut >= duration
+      ? duration
+      : Math.min(duration, Math.max(inPoint + frame, snapTime(requestedOut, duration, fps)));
+  return { inPoint, outPoint };
+}
+
+export function layerIsActive(layer: Layer, time: number, duration: number, fps = DEFAULT_FPS): boolean {
+  const { inPoint, outPoint } = layerClipRange(layer, duration, fps);
+  return time >= inPoint - 1e-6 && time <= outPoint + 1e-6;
 }
 
 export function fmtTime(t: number, fps = DEFAULT_FPS): string {
@@ -767,6 +792,20 @@ export function svgTransform(layer: Layer, t: number, fps = DEFAULT_FPS): string
   return `translate(${p.dx} ${p.dy}) translate(${cx} ${cy}) rotate(${p.rotate}) scale(${p.scale} ${p.scaleY}) translate(${-cx} ${-cy})`;
 }
 
+function clipAnimationCss(layer: Layer, duration: number, fps: number): string {
+  const { inPoint, outPoint } = layerClipRange(layer, duration, fps);
+  if (inPoint <= 0 && outPoint >= duration) return "";
+  const inPercent = duration <= 0 ? 0 : (inPoint / duration) * 100;
+  const outPercent = duration <= 0 ? 100 : (outPoint / duration) * 100;
+  const initialVisibility = inPoint <= 0 ? "visible" : "hidden";
+  return `@keyframes ${layer.id}_clip {\n` +
+    `  0% { visibility: ${initialVisibility}; }\n` +
+    `  ${inPercent.toFixed(4)}% { visibility: visible; }\n` +
+    `  ${outPercent.toFixed(4)}% { visibility: hidden; }\n` +
+    `  100% { visibility: hidden; }\n` +
+    `}\n`;
+}
+
 export function buildExport(
   layers: Layer[],
   duration: number,
@@ -787,6 +826,8 @@ export function buildExport(
   const motionFilters = new Map<string, string>();
   for (const layer of layers) {
     if (!layer.visible) continue;
+    const { inPoint, outPoint } = layerClipRange(layer, duration, fps);
+    const clipped = inPoint > 0 || outPoint < duration;
     const animated = PROPS.some((p) => layer.tracks[p].length > 0);
     if (motionBlur.enabled && animated && layer.visible) {
       const sampleTimes: number[] = [];
@@ -811,6 +852,10 @@ export function buildExport(
       }
     }
     if (!animated || !layer.visible) {
+      if (clipped) {
+        css += clipAnimationCss(layer, duration, fps);
+        css += `#${layer.id} { animation: ${layer.id}_clip ${duration}s linear infinite; }\n`;
+      }
       parts.push(layerMarkup(layer, 0, false, motionFilters.get(layer.id), fps));
       continue;
     }
@@ -831,7 +876,9 @@ export function buildExport(
       body += `    ${pct.toFixed(2)}% { opacity: ${p.opacity}; fill: ${fill}; stroke: ${stroke}; stroke-width: ${strokeWidth}; transform: translate(${p.dx}px, ${p.dy}px) translate(${cx}px, ${cy}px) rotate(${p.rotate}deg) scale(${p.scale}, ${p.scaleY}) translate(${-cx}px, ${-cy}px); }\n`;
     }
     css += `@keyframes ${layer.id}_anim {\n${body}}\n`;
-    css += `#${layer.id} { animation: ${layer.id}_anim ${duration}s linear infinite; transform-box: view-box; }\n`;
+    if (clipped) css += clipAnimationCss(layer, duration, fps);
+    const clipAnimation = clipped ? `, ${layer.id}_clip ${duration}s linear infinite` : "";
+    css += `#${layer.id} { animation: ${layer.id}_anim ${duration}s linear infinite${clipAnimation}; transform-box: view-box; }\n`;
     parts.push(layerMarkup(layer, 0, true, motionFilters.get(layer.id), fps));
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -859,7 +906,7 @@ export function buildFrameExport(
   const filters: string[] = [];
   const parts: string[] = [];
   for (const layer of layers) {
-    if (!layer.visible) continue;
+    if (!layer.visible || !layerIsActive(layer, time, duration, fps)) continue;
     let filterId: string | undefined;
     if (motionBlur.enabled) {
       const vector = motionBlurVector(layer, time, duration, motionBlur.strength, fps);
