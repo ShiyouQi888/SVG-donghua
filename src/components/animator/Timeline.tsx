@@ -26,6 +26,7 @@ import {
   Play,
   Repeat,
   ScanLine,
+  Square,
   Spline,
   StepBack,
   StepForward,
@@ -510,7 +511,7 @@ export function Timeline() {
         <div
           role="group"
           aria-label="播放控制"
-          className="mx-auto flex h-9 shrink-0 items-center gap-1 rounded-lg border border-border bg-surface-2/70 px-1.5 shadow-sm 2xl:absolute 2xl:left-1/2 2xl:top-1/2 2xl:z-20 2xl:-translate-x-1/2 2xl:-translate-y-1/2"
+          className="mx-auto flex h-9 shrink-0 items-center gap-0.5 2xl:absolute 2xl:left-1/2 2xl:top-1/2 2xl:z-20 2xl:-translate-x-1/2 2xl:-translate-y-1/2"
         >
           <button
             type="button"
@@ -539,15 +540,14 @@ export function Timeline() {
           >
             <StepForward className="size-4" />
           </button>
-          <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
           <button
             type="button"
             onClick={stop}
-            className="rounded-md px-2 py-1 text-xs text-muted transition-colors hover:bg-surface hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
+            className="grid size-7 place-items-center rounded-md text-muted transition-colors hover:bg-surface hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
             aria-label="停止并回到开始"
             title="停止并回到开始"
           >
-            停
+            <Square className="size-3.5 fill-current" />
           </button>
         </div>
         <div className="ml-auto flex items-center gap-3">
