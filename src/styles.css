@@ -4,15 +4,15 @@
 @theme {
   --font-sans: "IBM Plex Sans", "Source Han Sans SC", "Noto Sans SC", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --color-bg: #121418;
-  --color-surface: #1b2028;
-  --color-surface-2: #242b36;
-  --color-fg: #e7ebf2;
-  --color-muted: #8b93a3;
-  --color-primary: #4c9fff;
+  --color-bg: #191919;
+  --color-surface: #202020;
+  --color-surface-2: #292929;
+  --color-fg: #eeeeee;
+  --color-muted: #a0a0a0;
+  --color-primary: #bdbdbd;
   --color-key: #e6b325;
   --color-play: #ff5c4d;
-  --color-border: #2c3340;
+  --color-border: #3a3a3a;
   --color-danger: #e85d4c;
   --radius: 0.5rem;
 }
@@ -38,7 +38,7 @@
 }
 
 .stage-grid {
-  background-color: #0e1116;
+  background-color: var(--color-bg);
   background-image:
     linear-gradient(to right, rgb(255 255 255 / 0.04) 1px, transparent 1px),
     linear-gradient(to bottom, rgb(255 255 255 / 0.04) 1px, transparent 1px);
@@ -276,7 +276,7 @@
   width: 2px;
   height: 13px;
   background: color-mix(in oklab, var(--color-primary) 72%, white);
-  box-shadow: 0 0 5px rgb(76 159 255 / 0.28);
+  box-shadow: 0 0 5px color-mix(in oklab, var(--color-primary) 28%, transparent);
 }
 
 .timeline-ruler-label {

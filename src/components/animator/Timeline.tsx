@@ -630,7 +630,7 @@ export function Timeline() {
             aria-label="将播放头设为工作区入点"
             title="将播放头设为工作区入点"
             onClick={() => setWorkAreaEdge("start", time)}
-            className={`grid size-7 place-items-center rounded border text-[10px] font-semibold transition-colors ${workArea ? "border-primary/65 bg-primary/12 text-primary shadow-[inset_0_0_0_1px_rgb(76_159_255/0.12)]" : "border-primary/35 text-primary/80 hover:border-primary/60 hover:bg-primary/10 hover:text-primary"}`}
+            className={`grid size-7 place-items-center rounded border text-[10px] font-semibold transition-colors ${workArea ? "border-primary/65 bg-primary/12 text-primary" : "border-primary/35 text-primary/80 hover:border-primary/60 hover:bg-primary/10 hover:text-primary"}`}
           >
             入
           </button>

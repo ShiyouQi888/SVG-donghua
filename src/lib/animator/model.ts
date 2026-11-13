@@ -827,7 +827,7 @@ export function makeLayer(kind: ShapeKind, x: number, y: number, n: number): Lay
     image: "图片",
     group: "图层组",
   };
-  const fill = kind === "text" ? "#e7ebf2" : kind === "path" ? "none" : "#4c9fff";
+  const fill = kind === "text" ? "#e7ebf2" : kind === "path" ? "none" : "#bdbdbd";
   const stroke = "#e7ebf2";
   const strokeWidth = kind === "text" ? 0 : 2;
   return {
@@ -1585,7 +1585,7 @@ export function buildExport(
     /* 金帧 Kairo — 关键帧烘焙为 CSS */
 ${css}
   </style>
-  ${transparentBackground ? "" : '<rect width="100%" height="100%" fill="#121418"/>'}
+  ${transparentBackground ? "" : '<rect width="100%" height="100%" fill="#191919"/>'}
   ${parts.join("\n  ")}
 </svg>`;
 }
@@ -1625,7 +1625,7 @@ export function buildFrameExport(
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.exportWidth}" height="${dimensions.exportHeight}" viewBox="0 0 ${dimensions.projectWidth} ${dimensions.projectHeight}">
   ${filters.length ? `<defs>${filters.join("\n    ")}</defs>` : ""}
-  ${transparentBackground ? "" : '<rect width="100%" height="100%" fill="#121418"/>'}
+  ${transparentBackground ? "" : '<rect width="100%" height="100%" fill="#191919"/>'}
   ${parts.join("\n  ")}
 </svg>`;
 }

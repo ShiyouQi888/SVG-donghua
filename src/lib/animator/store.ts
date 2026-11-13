@@ -760,7 +760,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       outY: (point.outY - top) / height,
     }));
     layer.closed = closed;
-    layer.fill = closed ? "#4c9fff" : "none";
+    layer.fill = closed ? "#bdbdbd" : "none";
     layer.stroke = "#e7ebf2";
     layer.strokeWidth = 2;
     layer.rest = {

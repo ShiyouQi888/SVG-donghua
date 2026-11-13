@@ -1438,7 +1438,7 @@ export function Stage({
             (() => {
               const bounds = drawingBounds(drawing);
               const common = {
-                fill: "rgba(76,159,255,.22)",
+                fill: "color-mix(in srgb, var(--color-primary) 22%, transparent)",
                 stroke: "var(--color-primary)",
                 strokeWidth: 2,
                 strokeDasharray: "6 4",
@@ -1470,7 +1470,7 @@ export function Stage({
                         y={bounds.y}
                         width={bounds.w}
                         height={bounds.h}
-                        fill="rgba(76,159,255,.12)"
+                        fill="color-mix(in srgb, var(--color-primary) 12%, transparent)"
                         stroke="var(--color-primary)"
                         strokeDasharray="6 4"
                       />
