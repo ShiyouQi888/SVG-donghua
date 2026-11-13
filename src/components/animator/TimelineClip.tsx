@@ -190,7 +190,7 @@ export function TimelineClip({
       aria-roledescription="可移动图层片段"
       role="group"
       tabIndex={0}
-      title={label + " · 中间拖动移动时间，纵向拖动调整层级"}
+      title={label + " · 横向拖动移动时间，长度不变且在项目边界停止；占满项目的片段需先裁剪；纵向拖动调整层级"}
       onKeyDown={onKeyDown}
       onPointerDown={beginMove}
       onPointerMove={moveClip}

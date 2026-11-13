@@ -420,7 +420,17 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
           clipIn !== undefined && clipOut !== undefined && clipOut < clipIn + 1 / fps
             ? Math.max(0, clipOut - 1 / fps)
             : clipIn;
-        return { ...layer, clipIn: safeIn, clipOut, tracks };
+        const baseIn = safeIn ?? 0;
+        const baseOut = clipOut ?? duration;
+        const currentOffset = layer.timelineOffset ?? 0;
+        const timelineOffset = Math.min(duration - baseOut, Math.max(-baseIn, currentOffset));
+        return {
+          ...layer,
+          clipIn: safeIn,
+          clipOut,
+          timelineOffset: Math.abs(timelineOffset) < 1e-6 ? undefined : timelineOffset,
+          tracks,
+        };
       }),
     });
   },
@@ -471,7 +481,6 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       selectedId: id,
       selectedKey: null,
       selectedKeys: [],
-      expanded: id ? { ...get().expanded, [id]: true } : get().expanded,
     }),
   toggleExpanded: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),
   addShape: (kind, x, y, bounds) => {
@@ -482,7 +491,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       seq,
       layers: [...get().layers, layer],
       selectedId: layer.id,
-      expanded: { ...get().expanded, [layer.id]: true },
+      expanded: { ...get().expanded, [layer.id]: false },
       tool: "select",
       selectedKey: null,
       selectedKeys: [],
@@ -527,7 +536,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       seq,
       layers: [...get().layers, layer],
       selectedId: layer.id,
-      expanded: { ...get().expanded, [layer.id]: true },
+      expanded: { ...get().expanded, [layer.id]: false },
       tool: "select",
       selectedKey: null,
       selectedKeys: [],
@@ -572,8 +581,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const range = layerClipRange(layer, duration, fps);
     const baseIn = range.inPoint - currentOffset;
     const baseOut = range.outPoint - currentOffset;
-    const minOffset = -baseOut + frame;
-    const maxOffset = duration - baseIn - frame;
+    const minOffset = -baseIn;
+    const maxOffset = duration - baseOut;
     const requestedOffset = currentOffset + Math.round(deltaFrames) * frame;
     const nextOffset = Math.round(Math.min(maxOffset, Math.max(minOffset, requestedOffset)) * fps) / fps;
     const appliedFrames = Math.round((nextOffset - currentOffset) * fps);
@@ -1176,12 +1185,24 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       playing: false,
     }),
   replace: (doc) => {
-    const layers = doc.layers?.length ? doc.layers.map(hydrateLayer) : demoLayers();
+    const duration = doc.duration || 3;
+    const fps = normalizeFrameRate(doc.fps);
+    const layers = (doc.layers?.length ? doc.layers.map(hydrateLayer) : demoLayers()).map((layer) => {
+      const range = layerClipRange(layer, duration, fps);
+      const offset = layer.timelineOffset ?? 0;
+      const baseIn = range.inPoint - offset;
+      const baseOut = range.outPoint - offset;
+      const safeOffset = Math.min(duration - baseOut, Math.max(-baseIn, offset));
+      return {
+        ...layer,
+        timelineOffset: Math.abs(safeOffset) < 1e-6 ? undefined : safeOffset,
+      };
+    });
     const projectWidth = safeDimension(doc.projectWidth ?? 800, 800);
     const projectHeight = safeDimension(doc.projectHeight ?? 500, 500);
     set({
-      duration: doc.duration || 3,
-      fps: normalizeFrameRate(doc.fps),
+      duration,
+      fps,
       loop: doc.loop ?? true,
       pxPerSec: doc.pxPerSec || 120,
       projectWidth,
@@ -1198,7 +1219,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       selectedId: layers[0]?.id ?? null,
       selectedKey: null,
       selectedKeys: [],
-      expanded: Object.fromEntries(layers.map((l) => [l.id, true])),
+      expanded: Object.fromEntries(layers.map((l) => [l.id, false])),
       seq: layers.length,
     });
   },

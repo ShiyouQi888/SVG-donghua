@@ -17,6 +17,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  GripVertical,
   LockKeyhole,
   LockKeyholeOpen,
   Magnet,
@@ -805,7 +806,7 @@ export function Timeline() {
           )}
 
           {[...layers].reverse().map((layer) => {
-            const open = expanded[layer.id] !== false;
+            const open = expanded[layer.id] === true;
             const transformKey = `${layer.id}:transform`;
             const transformOpen = expanded[transformKey] !== false;
             const appearanceKey = `${layer.id}:appearance`;
@@ -860,6 +861,7 @@ export function Timeline() {
                         <EyeOff className="size-3.5" />
                       )}
                     </button>
+                    <TimelineLayerOrderHandle layerId={layer.id} />
                     <TimelineLayerName
                       layer={layer}
                       selected={layer.id === selectedId}
@@ -1067,9 +1069,67 @@ export function Timeline() {
         </div>
       )}
       <p className="border-t border-border px-3 py-1 text-xs text-muted">
-        拖动上沿调整高度 · J / K 跳帧 · 框选/Shift 多选 · 右键缓动 · Ctrl+C / V 复制粘贴
+        片段横拖移动时间 · 层级把手纵拖换层 · 拖动上沿调整高度 · J / K 跳帧 · 框选多选 · 右键缓动
       </p>
     </section>
+  );
+}
+
+function TimelineLayerOrderHandle({ layerId }: { layerId: string }) {
+  const drag = useRef<{ pointerId: number; lastTarget: string | null } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const moveLayerToRow = useDoc((state) => state.moveLayerToRow);
+
+  function beginDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    useDoc.getState().selectLayer(layerId);
+    useDoc.getState().beginUndoGroup();
+    drag.current = { pointerId: event.pointerId, lastTarget: null };
+    setDragging(true);
+  }
+
+  function moveDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = document.elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-layer-row-id]");
+    const targetId = target?.dataset.layerRowId;
+    if (!target || !targetId || targetId === layerId) return;
+    const rect = target.getBoundingClientRect();
+    const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+    const rowTarget = `${targetId}:${placement}`;
+    if (rowTarget === active.lastTarget) return;
+    moveLayerToRow(layerId, targetId, placement);
+    active.lastTarget = rowTarget;
+  }
+
+  function finishDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    drag.current = null;
+    setDragging(false);
+    useDoc.getState().endUndoGroup();
+  }
+
+  return (
+    <button
+      type="button"
+      aria-label="拖动调整图层层级"
+      title="拖动调整层级"
+      data-layer-order-handle={layerId}
+      onPointerDown={beginDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={finishDrag}
+      onPointerCancel={finishDrag}
+      onLostPointerCapture={finishDrag}
+      className={`grid size-6 shrink-0 touch-none place-items-center rounded text-muted transition-colors hover:bg-surface-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-primary active:cursor-grabbing ${dragging ? "cursor-grabbing bg-primary/15 text-primary" : "cursor-grab"}`}
+    >
+      <GripVertical className="size-3.5" />
+    </button>
   );
 }
 
