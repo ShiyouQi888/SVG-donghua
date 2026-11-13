@@ -630,7 +630,7 @@ export function Timeline() {
             aria-label="将播放头设为工作区入点"
             title="将播放头设为工作区入点"
             onClick={() => setWorkAreaEdge("start", time)}
-            className={`grid size-7 place-items-center rounded border text-[10px] ${workArea ? "border-primary/40 text-primary" : "border-border text-muted hover:bg-surface-2 hover:text-fg"}`}
+            className={`grid size-7 place-items-center rounded border text-[10px] font-semibold transition-colors ${workArea ? "border-primary/65 bg-primary/12 text-primary shadow-[inset_0_0_0_1px_rgb(76_159_255/0.12)]" : "border-primary/35 text-primary/80 hover:border-primary/60 hover:bg-primary/10 hover:text-primary"}`}
           >
             入
           </button>
@@ -639,7 +639,7 @@ export function Timeline() {
             aria-label="将播放头设为工作区出点"
             title="将播放头设为工作区出点"
             onClick={() => setWorkAreaEdge("end", time)}
-            className={`grid size-7 place-items-center rounded border text-[10px] ${workArea ? "border-primary/40 text-primary" : "border-border text-muted hover:bg-surface-2 hover:text-fg"}`}
+            className={`grid size-7 place-items-center rounded border text-[10px] font-semibold transition-colors ${workArea ? "border-key/70 bg-key/12 text-key shadow-[inset_0_0_0_1px_rgb(230_179_37/0.12)]" : "border-key/35 text-key/85 hover:border-key/65 hover:bg-key/10 hover:text-key"}`}
           >
             出
           </button>
@@ -1112,12 +1112,15 @@ export function Timeline() {
           {workArea && (
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute bottom-0 top-7 z-0 border-x border-primary/20 bg-primary/[0.035]"
+              className="timeline-work-area pointer-events-none absolute bottom-0 top-7 z-0 border-y border-primary/25 bg-primary/[0.045]"
               style={{
                 left: labelWidth + timeToX(workArea.start, timelinePx, fps),
                 width: Math.max(1, timeToX(workArea.end - workArea.start, timelinePx, fps)),
               }}
-            />
+            >
+              <span className="timeline-work-area-edge is-in absolute inset-y-0 left-0" />
+              <span className="timeline-work-area-edge is-out absolute inset-y-0 right-0" />
+            </div>
           )}
 
           <div className="flex h-6 border-b border-border/80 bg-surface/90">
@@ -1729,7 +1732,7 @@ function Ruler({
   if (frames.at(-1) !== lastFrame) frames.push(lastFrame);
 
   return (
-    <div className="relative h-full" style={{ width }}>
+    <div className="timeline-ruler relative h-full" style={{ width }}>
       {frames.map((frame) => {
         const major = frame % majorStep === 0;
         const endpointAllowed = timeDisplayMode === "timecode" || frame % 5 === 0;
@@ -1744,12 +1747,12 @@ function Ruler({
             style={{ left: frameToX(frame, px, fps) }}
           >
             <span
-              className={`absolute bottom-0 left-0 w-px ${major ? "h-2 bg-border" : "h-1 bg-border/60"}`}
+              className={`timeline-ruler-tick absolute bottom-0 left-0 ${major ? "is-major" : ""}`}
             />
             {label && (
               <span
                 title={formatTimelineTime(time, fps, timeDisplayMode)}
-                className="absolute left-1 top-0.5 whitespace-nowrap font-mono text-xs text-muted"
+                className={`timeline-ruler-label absolute left-1 top-0.5 whitespace-nowrap font-mono text-[11px] tabular-nums ${major ? "is-major" : ""}`}
               >
                 {formatRulerTime(frame, fps, timeDisplayMode)}
               </span>

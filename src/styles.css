@@ -229,6 +229,65 @@
   touch-action: none;
   user-select: none;
   cursor: ew-resize;
+  width: 12px;
+  border: 1px solid rgb(255 255 255 / 0.82);
+  box-shadow:
+    0 0 0 1px rgb(10 13 18 / 0.7),
+    0 0 7px rgb(10 13 18 / 0.5);
+}
+
+.timeline-clip-trim[data-clip-edge="in"] {
+  background: color-mix(in oklab, var(--color-primary) 72%, white);
+}
+
+.timeline-clip-trim[data-clip-edge="out"] {
+  background: color-mix(in oklab, var(--color-key) 72%, white);
+}
+
+.timeline-clip-trim:hover {
+  filter: brightness(1.14);
+  box-shadow:
+    0 0 0 1px rgb(10 13 18 / 0.8),
+    0 0 10px rgb(255 255 255 / 0.34);
+}
+
+.timeline-work-area-edge {
+  width: 2px;
+  box-shadow: 0 0 7px currentcolor;
+}
+
+.timeline-work-area-edge.is-in {
+  color: var(--color-primary);
+  background: color-mix(in oklab, var(--color-primary) 78%, white);
+}
+
+.timeline-work-area-edge.is-out {
+  color: var(--color-key);
+  background: color-mix(in oklab, var(--color-key) 78%, white);
+}
+
+.timeline-ruler-tick {
+  width: 1px;
+  height: 6px;
+  background: color-mix(in oklab, var(--color-muted) 72%, var(--color-border));
+}
+
+.timeline-ruler-tick.is-major {
+  width: 2px;
+  height: 13px;
+  background: color-mix(in oklab, var(--color-primary) 72%, white);
+  box-shadow: 0 0 5px rgb(76 159 255 / 0.28);
+}
+
+.timeline-ruler-label {
+  color: color-mix(in oklab, var(--color-muted) 90%, white);
+  font-weight: 500;
+  text-shadow: 0 1px 3px rgb(18 20 24 / 0.95);
+}
+
+.timeline-ruler-label.is-major {
+  color: var(--color-fg);
+  font-weight: 600;
 }
 
 .stage-motion-path-line {

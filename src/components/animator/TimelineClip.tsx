@@ -5,6 +5,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { fmtTime, layerClipRange, type Layer } from "@/lib/animator/model";
 import { useDoc } from "@/lib/animator/store";
 
@@ -117,13 +118,17 @@ export function TimelineClip({
   }
 
   function findTargetRow(clientX: number, clientY: number) {
-    const direct = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>("[data-layer-row-id]");
+    const direct = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-layer-row-id]");
     if (direct && direct.dataset.layerRowId !== layer.id) return direct;
     const rows = Array.from(document.querySelectorAll<HTMLElement>("[data-layer-row-id]"));
-    return rows.find((row) => {
-      const rect = row.getBoundingClientRect();
-      return row.dataset.layerRowId !== layer.id && clientY >= rect.top && clientY <= rect.bottom;
-    }) ?? null;
+    return (
+      rows.find((row) => {
+        const rect = row.getBoundingClientRect();
+        return row.dataset.layerRowId !== layer.id && clientY >= rect.top && clientY <= rect.bottom;
+      }) ?? null
+    );
   }
 
   function moveClip(event: ReactPointerEvent<HTMLDivElement>) {
@@ -140,7 +145,7 @@ export function TimelineClip({
     }
 
     if (active.mode === "time") {
-      const totalFrames = Math.round((event.clientX - active.startX) / Math.max(1, px) * fps);
+      const totalFrames = Math.round(((event.clientX - active.startX) / Math.max(1, px)) * fps);
       const deltaFrames = totalFrames - active.lastAppliedFrames;
       if (deltaFrames !== 0) moveLayerClip(layer.id, deltaFrames);
       active.lastAppliedFrames = totalFrames;
@@ -178,7 +183,8 @@ export function TimelineClip({
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (locked) return;
-    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey)
+      return;
     if (event.key === "ArrowLeft") moveLayerClip(layer.id, -1);
     else if (event.key === "ArrowRight") moveLayerClip(layer.id, 1);
     else if (event.key === "ArrowUp") moveLayer(layer.id, "front");
@@ -198,7 +204,10 @@ export function TimelineClip({
       aria-roledescription="可移动图层片段"
       role="group"
       tabIndex={0}
-      title={label + " · 横向拖动移动时间，长度不变且在项目边界停止；占满项目的片段需先裁剪；纵向拖动调整层级"}
+      title={
+        label +
+        " · 横向拖动移动时间，长度不变且在项目边界停止；占满项目的片段需先裁剪；纵向拖动调整层级"
+      }
       onKeyDown={onKeyDown}
       onPointerDown={beginMove}
       onPointerMove={moveClip}
@@ -280,11 +289,15 @@ function TrimHandle({
       onLostPointerCapture={finishTrim}
       onDoubleClick={(event) => resetTrim(event, edge)}
       className={
-        "timeline-clip-trim absolute inset-y-0 z-10 grid w-2 place-items-center bg-primary/70 transition-colors hover:bg-primary " +
+        "timeline-clip-trim absolute inset-y-0 z-10 grid w-3 place-items-center transition-[filter,box-shadow] duration-150 focus-visible:z-20 focus-visible:outline-2 focus-visible:outline-white " +
         (start ? "left-0 rounded-l-sm" : "right-0 rounded-r-sm")
       }
     >
-      <span className="h-2.5 w-px rounded-full bg-white/90" />
+      {start ? (
+        <ChevronRight aria-hidden="true" className="size-3 stroke-[2.75] text-white drop-shadow" />
+      ) : (
+        <ChevronLeft aria-hidden="true" className="size-3 stroke-[2.75] text-white drop-shadow" />
+      )}
     </button>
   );
 }
