@@ -32,7 +32,6 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_BEZIER,
-  FPS,
   PROP_LABEL,
   PROPS,
   STYLE_PROPS,
@@ -108,16 +107,16 @@ type TimelineKeyDrag = {
   keys: KeyframeMove[];
 };
 
-function frameToX(frame: number, pxPerSecond: number): number {
-  return (frame * pxPerSecond) / FPS;
+function frameToX(frame: number, pxPerSecond: number, fps: number): number {
+  return (frame * pxPerSecond) / fps;
 }
 
-function timeToX(time: number, pxPerSecond: number): number {
-  return frameToX(Math.round(time * FPS), pxPerSecond);
+function timeToX(time: number, pxPerSecond: number, fps: number): number {
+  return frameToX(Math.round(time * fps), pxPerSecond, fps);
 }
 
-function xToTime(x: number, pxPerSecond: number, duration: number): number {
-  return snapTime(x / pxPerSecond, duration);
+function xToTime(x: number, pxPerSecond: number, duration: number, fps: number): number {
+  return snapTime(x / pxPerSecond, duration, fps);
 }
 
 export function Timeline() {
@@ -161,6 +160,7 @@ export function Timeline() {
   const layers = useDoc((s) => s.layers);
   const expanded = useDoc((s) => s.expanded);
   const duration = useDoc((s) => s.duration);
+  const fps = useDoc((s) => s.fps);
   const time = useDoc((s) => s.time);
   const px = useDoc((s) => s.pxPerSec);
   const selectedId = useDoc((s) => s.selectedId);
@@ -290,7 +290,7 @@ export function Timeline() {
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
     const x = clientX - rect.left + el.scrollLeft - labelWidth;
-    return xToTime(x, timelinePx, duration);
+    return xToTime(x, timelinePx, duration, fps);
   }
 
   function beginKeyMove(
@@ -330,7 +330,7 @@ export function Timeline() {
     if (keys.length === 0) return;
     const rect = scrollRef.current.getBoundingClientRect();
     const pointerX = event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth;
-    const pointerOffsetX = pointerX - timeToX(startTime, timelinePx);
+    const pointerOffsetX = pointerX - timeToX(startTime, timelinePx, fps);
     keyDrag.current = { pointerId: event.pointerId, startTime, pointerOffsetX, keys };
     useDoc.getState().beginUndoGroup();
     scrollRef.current.setPointerCapture(event.pointerId);
@@ -408,10 +408,10 @@ export function Timeline() {
           停
         </button>
         <span
-          aria-label={`当前时间 ${fmtTime(time)}，总时长 ${fmtTime(duration)}，${FPS}fps`}
+          aria-label={`当前时间 ${fmtTime(time, fps)}，总时长 ${fmtTime(duration, fps)}，${fps}fps`}
           className="font-mono text-xs text-muted tabular-nums"
         >
-          {fmtTime(time)} / {fmtTime(duration)} · {FPS}fps
+          {fmtTime(time, fps)} / {fmtTime(duration, fps)} · {fps}fps
         </span>
         <button
           type="button"
@@ -490,7 +490,9 @@ export function Timeline() {
               max={30}
               step={0.5}
               value={duration}
-              onChange={(e) => setDuration(Number(e.target.value))}
+              onChange={(e) => {
+                if (e.target.value !== "") setDuration(Number(e.target.value));
+              }}
               className="w-14 rounded-md border border-border bg-surface-2 px-1 py-0.5 font-mono text-fg"
             />
             s
@@ -576,7 +578,8 @@ export function Timeline() {
             const rect = scrollRef.current.getBoundingClientRect();
             const x =
               event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth - drag.pointerOffsetX;
-            const targetTime = xToTime(x, timelinePx, useDoc.getState().duration);
+            const targetState = useDoc.getState();
+            const targetTime = xToTime(x, timelinePx, targetState.duration, targetState.fps);
             useDoc.getState().moveKeys(drag.keys, targetTime - drag.startTime);
             return;
           }
@@ -725,7 +728,7 @@ export function Timeline() {
                 </button>
               </div>
             </div>
-            <Ruler duration={duration} px={timelinePx} width={width} />
+            <Ruler duration={duration} fps={fps} px={timelinePx} width={width} />
           </div>
 
           {layers.length === 0 && (
@@ -894,7 +897,7 @@ export function Timeline() {
 
           <div
             className="pointer-events-none absolute bottom-0 z-30 w-px bg-play"
-            style={{ left: labelWidth + timeToX(time, timelinePx), top: 0 }}
+            style={{ left: labelWidth + timeToX(time, timelinePx, fps), top: 0 }}
           >
             <div className="absolute -left-1.5 top-0 size-0 border-x-[6px] border-t-8 border-x-transparent border-t-play" />
           </div>
@@ -1060,12 +1063,17 @@ function TimelineLayerName({
   );
 }
 
-function Ruler({ duration, px, width }: { duration: number; px: number; width: number }) {
-  const lastFrame = Math.max(0, Math.round(duration * FPS));
-  const pxPerFrame = px / FPS;
-  const majorSteps = [1, 2, 3, 6, 15, 30, 60, 90, 150, 300, 600, 900];
+function Ruler({ duration, fps, px, width }: { duration: number; fps: number; px: number; width: number }) {
+  const lastFrame = Math.max(0, Math.round(duration * fps));
+  const pxPerFrame = px / fps;
+  const baseSteps = [1, 2, 3, 6, 15, 30, 60, 90, 150, 300, 600, 900];
+  const majorSteps = [...new Set(baseSteps.map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
+    (a, b) => a - b,
+  );
   const majorStep = majorSteps.find((step) => step * pxPerFrame >= 40) ?? majorSteps.at(-1)!;
-  const minorSteps = [1, 2, 3, 6, 15, 30];
+  const minorSteps = [...new Set(baseSteps.slice(0, 6).map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
+    (a, b) => a - b,
+  );
   const minorStep =
     minorSteps.find((step) => step <= majorStep && majorStep % step === 0 && step * pxPerFrame >= 6) ??
     majorStep;
@@ -1080,24 +1088,24 @@ function Ruler({ duration, px, width }: { duration: number; px: number; width: n
       {frames.map((frame) => {
         const major = frame % majorStep === 0;
         const label = major || (frame === lastFrame && labelEndpoint);
-        const time = frame / FPS;
+        const time = frame / fps;
         return (
           <span
             key={frame}
             data-ruler-frame={frame}
             data-ruler-major={major ? "true" : "false"}
             className="absolute top-0 h-full"
-            style={{ left: frameToX(frame, px) }}
+            style={{ left: frameToX(frame, px, fps) }}
           >
             <span
               className={`absolute bottom-0 left-0 w-px ${major ? "h-2 bg-border" : "h-1 bg-border/60"}`}
             />
             {label && (
               <span
-                title={fmtTime(time)}
+                title={fmtTime(time, fps)}
                 className="absolute left-1 top-0.5 whitespace-nowrap font-mono text-xs text-muted"
               >
-                {fmtRulerTime(time)}
+                {fmtRulerTime(time, fps)}
               </span>
             )}
           </span>
@@ -1133,11 +1141,12 @@ function PropTrack({
   const track = useDoc((s) => s.layers.find((l) => l.id === layerId)?.tracks[prop] ?? []);
   const time = useDoc((s) => s.time);
   const duration = useDoc((s) => s.duration);
+  const fps = useDoc((s) => s.fps);
   const toggleKey = useDoc((s) => s.toggleKey);
   const layer = useDoc((s) => s.layers.find((l) => l.id === layerId));
   const setDisplayed = useDoc((s) => s.setDisplayed);
   const armed = layer?.armed[prop];
-  const live = keyNear(track, time);
+  const live = keyNear(track, time, fps);
 
   return (
     <div className="flex h-8 border-b border-border/70">
@@ -1153,13 +1162,13 @@ function PropTrack({
         {prop === "fill" || prop === "stroke" ? (
           <ColorControl
             prop={prop}
-            value={layer ? displayed(layer, prop, time) : 0}
+            value={layer ? displayed(layer, prop, time, fps) : 0}
             onChange={(value) => setDisplayed(layerId, prop, value)}
           />
         ) : (
           <NumericScrub
             prop={prop}
-            value={layer ? displayed(layer, prop, time) : 0}
+            value={layer ? displayed(layer, prop, time, fps) : 0}
             onChange={(value) => setDisplayed(layerId, prop, value)}
           />
         )}
@@ -1177,7 +1186,7 @@ function PropTrack({
           }
           const rect = scroller.getBoundingClientRect();
           const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
-          useDoc.getState().setTime(xToTime(x, px, duration));
+          useDoc.getState().setTime(xToTime(x, px, duration, fps));
           toggleKey(layerId, prop);
         }}
       >
@@ -1189,10 +1198,10 @@ function PropTrack({
             data-key-id={kf.id}
             data-layer-id={layerId}
             data-prop={prop}
-            aria-label={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t)}`}
-            title={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t)} · ${kf.interp}`}
+            aria-label={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t, fps)}`}
+            title={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t, fps)} · ${kf.interp}`}
             className={`tl-key interp-${kf.interp} ${selected.includes(kf.id) || live?.id === kf.id ? "is-selected" : ""}`}
-            style={{ left: timeToX(kf.t, px) }}
+            style={{ left: timeToX(kf.t, px, fps) }}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -1236,17 +1245,18 @@ function VectorTrack({
   const primaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[primary] ?? []);
   const secondaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[secondary] ?? []);
   const time = useDoc((state) => state.time);
+  const fps = useDoc((state) => state.fps);
 
   const markers = new Map<number, { t: number; primary?: Keyframe; secondary?: Keyframe }>();
   for (const key of primaryTrack) {
-    const frame = Math.round(key.t * FPS);
-    const marker = markers.get(frame) ?? { t: frame / FPS };
+    const frame = Math.round(key.t * fps);
+    const marker = markers.get(frame) ?? { t: frame / fps };
     marker.primary = key;
     markers.set(frame, marker);
   }
   for (const key of secondaryTrack) {
-    const frame = Math.round(key.t * FPS);
-    const marker = markers.get(frame) ?? { t: frame / FPS };
+    const frame = Math.round(key.t * fps);
+    const marker = markers.get(frame) ?? { t: frame / fps };
     marker.secondary = key;
     markers.set(frame, marker);
   }
@@ -1255,8 +1265,8 @@ function VectorTrack({
     const state = useDoc.getState();
     const current = state.layers.find((item) => item.id === layerId);
     if (!current) return;
-    const currentPrimary = displayed(current, primary, state.time);
-    const currentSecondary = displayed(current, secondary, state.time);
+    const currentPrimary = displayed(current, primary, state.time, state.fps);
+    const currentSecondary = displayed(current, secondary, state.time, state.fps);
     let nextPrimary = currentPrimary;
     let nextSecondary = currentSecondary;
     if (prop === primary) nextPrimary = value;
@@ -1281,8 +1291,8 @@ function VectorTrack({
     state.setTime(targetTime);
     const current = state.layers.find((item) => item.id === layerId);
     if (!current) return;
-    state.setDisplayed(layerId, primary, displayed(current, primary, targetTime), true);
-    state.setDisplayed(layerId, secondary, displayed(current, secondary, targetTime), true);
+    state.setDisplayed(layerId, primary, displayed(current, primary, targetTime, state.fps), true);
+    state.setDisplayed(layerId, secondary, displayed(current, secondary, targetTime, state.fps), true);
   };
 
   return (
@@ -1323,13 +1333,13 @@ function VectorTrack({
           if (!scroller) return;
           const rect = scroller.getBoundingClientRect();
           const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
-          const targetTime = xToTime(x, px, useDoc.getState().duration);
           const state = useDoc.getState();
+          const targetTime = xToTime(x, px, state.duration, state.fps);
           const current = state.layers.find((item) => item.id === layerId);
           if (!current) return;
           state.setTime(targetTime);
-          const a = keyNear(current.tracks[primary], targetTime);
-          const b = keyNear(current.tracks[secondary], targetTime);
+          const a = keyNear(current.tracks[primary], targetTime, state.fps);
+          const b = keyNear(current.tracks[secondary], targetTime, state.fps);
           if (a && b) {
             state.toggleKey(layerId, primary);
             state.toggleKey(layerId, secondary);
@@ -1350,7 +1360,7 @@ function VectorTrack({
           );
           const markerValue = (prop: PropKey, key: Keyframe | undefined) => {
             if (!layer) return 0;
-            if (!key) return displayed(layer, prop, marker.t);
+            if (!key) return displayed(layer, prop, marker.t, fps);
             if (vector === "position" && (prop === "x" || prop === "y")) {
               return (prop === "x" ? layer.x : layer.y) + key.v;
             }
@@ -1371,10 +1381,10 @@ function VectorTrack({
               data-key-id={marker.primary?.id ?? marker.secondary?.id}
               data-layer-id={layerId}
               data-prop={primary}
-              aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t)}`}
-              title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t)} · ${interpolation}`}
+              aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t, fps)}`}
+              title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t, fps)} · ${interpolation}`}
               className={`tl-key interp-${interpolation} ${active ? "is-selected" : ""}`}
-              style={{ left: timeToX(marker.t, px) }}
+              style={{ left: timeToX(marker.t, px, fps) }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -1402,12 +1412,13 @@ function AxisScrub({
   time: number;
   onChange: (prop: PropKey, value: number) => void;
 }) {
+  const fps = useDoc((state) => state.fps);
   return (
     <div className="flex min-w-0 items-center gap-0.5">
       <span className="text-[9px] text-muted">{axis}</span>
       <NumericScrub
         prop={prop}
-        value={layer ? displayed(layer, prop, time) : 0}
+        value={layer ? displayed(layer, prop, time, fps) : 0}
         onChange={(value) => onChange(prop, value)}
         className="timeline-scrub-value !ml-0 w-[2.65rem] px-0.5 text-[9px]"
       />
@@ -1427,10 +1438,11 @@ function VectorKeyNav({
   title: string;
 }) {
   const time = useDoc((state) => state.time);
+  const fps = useDoc((state) => state.fps);
   const layer = useDoc((state) => state.layers.find((item) => item.id === layerId));
   const armed = Boolean(layer?.armed[primary] || layer?.armed[secondary]);
-  const hitA = layer ? keyNear(layer.tracks[primary], time) : undefined;
-  const hitB = layer ? keyNear(layer.tracks[secondary], time) : undefined;
+  const hitA = layer ? keyNear(layer.tracks[primary], time, fps) : undefined;
+  const hitB = layer ? keyNear(layer.tracks[secondary], time, fps) : undefined;
   const hasKey = Boolean(hitA || hitB);
 
   const toggleArmed = () => {
@@ -1448,16 +1460,16 @@ function VectorKeyNav({
     if (!current) return;
     const times = [...new Set([...current.tracks[primary], ...current.tracks[secondary]].map((key) => key.t))].sort((a, b) => a - b);
     const target = direction < 0
-      ? [...times].reverse().find((keyTime) => keyTime < state.time - 0.5 / FPS)
-      : times.find((keyTime) => keyTime > state.time + 0.5 / FPS);
+      ? [...times].reverse().find((keyTime) => keyTime < state.time - 0.5 / state.fps)
+      : times.find((keyTime) => keyTime > state.time + 0.5 / state.fps);
     if (target === undefined) return;
     state.setTime(target);
     const atTarget: SelectedKey[] = [
-      ...(keyNear(current.tracks[primary], target)
-        ? [{ layerId, prop: primary, id: keyNear(current.tracks[primary], target)!.id }]
+      ...(keyNear(current.tracks[primary], target, state.fps)
+        ? [{ layerId, prop: primary, id: keyNear(current.tracks[primary], target, state.fps)!.id }]
         : []),
-      ...(keyNear(current.tracks[secondary], target)
-        ? [{ layerId, prop: secondary, id: keyNear(current.tracks[secondary], target)!.id }]
+      ...(keyNear(current.tracks[secondary], target, state.fps)
+        ? [{ layerId, prop: secondary, id: keyNear(current.tracks[secondary], target, state.fps)!.id }]
         : []),
     ];
     state.selectKeys(atTarget);
@@ -1472,8 +1484,8 @@ function VectorKeyNav({
       state.toggleKey(layerId, secondary);
       return;
     }
-    state.setDisplayed(layerId, primary, displayed(current, primary, time), true);
-    state.setDisplayed(layerId, secondary, displayed(current, secondary, time), true);
+    state.setDisplayed(layerId, primary, displayed(current, primary, time, state.fps), true);
+    state.setDisplayed(layerId, secondary, displayed(current, secondary, time, state.fps), true);
   };
 
   return (

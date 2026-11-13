@@ -1,6 +1,5 @@
 import {
   buildFrameExport,
-  FPS,
   type ExportDimensions,
   type Layer,
   type MotionBlurSettings,
@@ -9,6 +8,7 @@ import {
 export type MediaExportOptions = {
   layers: Layer[];
   duration: number;
+  fps: number;
   dimensions: ExportDimensions;
   motionBlur: MotionBlurSettings;
   transparentBackground: boolean;
@@ -35,6 +35,7 @@ async function renderFrame(
     options.dimensions,
     options.motionBlur,
     options.transparentBackground,
+    options.fps,
   );
   const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
   try {
@@ -69,7 +70,7 @@ export async function exportGif(options: MediaExportOptions): Promise<Blob> {
   const { applyPalette, GIFEncoder, quantize } = await import("gifenc");
   const width = options.dimensions.exportWidth;
   const height = options.dimensions.exportHeight;
-  const fps = 12;
+  const fps = options.fps;
   const totalFrames = Math.max(1, Math.ceil(options.duration * fps));
   const canvas = makeCanvas(width, height);
   const context = canvas.getContext("2d", { alpha: options.transparentBackground });
@@ -118,7 +119,7 @@ export async function exportWebm(options: MediaExportOptions): Promise<Blob> {
   if (!context || typeof canvas.captureStream !== "function") {
     throw new Error("当前浏览器不支持画布视频录制。");
   }
-  const fps = FPS;
+  const fps = options.fps;
   const totalFrames = Math.max(1, Math.ceil(options.duration * fps));
   await renderFrame(context, 0, options);
   const stream = canvas.captureStream(fps);

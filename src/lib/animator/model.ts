@@ -1,4 +1,12 @@
-export const FPS = 30;
+export const DEFAULT_FPS = 30;
+export const FRAME_RATE_OPTIONS = [12, 15, 24, 25, 30, 50, 60] as const;
+export type FrameRate = (typeof FRAME_RATE_OPTIONS)[number];
+export const FPS = DEFAULT_FPS;
+
+export function normalizeFrameRate(value: unknown, fallback: FrameRate = DEFAULT_FPS): FrameRate {
+  const fps = Number(value);
+  return FRAME_RATE_OPTIONS.find((option) => option === fps) ?? fallback;
+}
 export const PROPS = [
   "opacity",
   "x",
@@ -99,6 +107,7 @@ export type Layer = {
 
 export type PersistedDoc = {
   duration: number;
+  fps?: number;
   loop?: boolean;
   pxPerSec: number;
   projectWidth?: number;
@@ -120,8 +129,6 @@ export type ExportDimensions = {
   exportWidth: number;
   exportHeight: number;
 };
-
-const NEAR = 0.5 / FPS;
 
 export function nid(prefix = "id"): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
@@ -190,15 +197,15 @@ function blendColor(from: number, to: number, amount: number): number {
   return (channel(16) << 16) | (channel(8) << 8) | channel(0);
 }
 
-export function snapTime(t: number, duration: number): number {
-  const f = Math.round(t * FPS) / FPS;
+export function snapTime(t: number, duration: number, fps = DEFAULT_FPS): number {
+  const f = Math.round(t * fps) / fps;
   return Math.min(duration, Math.max(0, f));
 }
 
-export function fmtTime(t: number): string {
-  const totalFrames = Math.max(0, Math.round(t * FPS));
-  const totalSeconds = Math.floor(totalFrames / FPS);
-  const frame = totalFrames % FPS;
+export function fmtTime(t: number, fps = DEFAULT_FPS): string {
+  const totalFrames = Math.max(0, Math.round(t * fps));
+  const totalSeconds = Math.floor(totalFrames / fps);
+  const frame = totalFrames % fps;
   const seconds = totalSeconds % 60;
   const totalMinutes = Math.floor(totalSeconds / 60);
   const minutes = totalMinutes % 60;
@@ -208,10 +215,10 @@ export function fmtTime(t: number): string {
 }
 
 /** Compact ruler label in seconds:frames; use fmtTime for an unambiguous full timecode. */
-export function fmtRulerTime(t: number): string {
-  const totalFrames = Math.max(0, Math.round(t * FPS));
-  const seconds = Math.floor(totalFrames / FPS) % 60;
-  const frame = totalFrames % FPS;
+export function fmtRulerTime(t: number, fps = DEFAULT_FPS): string {
+  const totalFrames = Math.max(0, Math.round(t * fps));
+  const seconds = Math.floor(totalFrames / fps) % 60;
+  const frame = totalFrames % fps;
   return `${String(seconds).padStart(2, "0")}:${String(frame).padStart(2, "0")}`;
 }
 
@@ -283,8 +290,8 @@ function clamp01(value: number): number {
   return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
 }
 
-export function keyNear(track: Keyframe[], t: number): Keyframe | undefined {
-  return track.find((k) => Math.abs(k.t - t) < NEAR);
+export function keyNear(track: Keyframe[], t: number, fps = DEFAULT_FPS): Keyframe | undefined {
+  return track.find((k) => Math.abs(k.t - t) < 0.5 / fps);
 }
 
 function rawPositionAt(layer: Layer, t: number): { x: number; y: number } {
@@ -313,7 +320,7 @@ function cubicPoint(
 }
 
 /** Sample a layer's animated XY position, including editable spatial Bezier tangents. */
-export function positionAt(layer: Layer, t: number): { x: number; y: number } {
+export function positionAt(layer: Layer, t: number, fps = DEFAULT_FPS): { x: number; y: number } {
   const times = [...new Set([...layer.tracks.x, ...layer.tracks.y].map((key) => key.t))].sort(
     (a, b) => a - b,
   );
@@ -323,8 +330,8 @@ export function positionAt(layer: Layer, t: number): { x: number; y: number } {
     const startTime = times[index];
     const endTime = times[index + 1];
     if (t < startTime || t > endTime) continue;
-    const startKey = keyNear(layer.tracks.x, startTime) ?? keyNear(layer.tracks.y, startTime);
-    const endKey = keyNear(layer.tracks.x, endTime) ?? keyNear(layer.tracks.y, endTime);
+    const startKey = keyNear(layer.tracks.x, startTime, fps) ?? keyNear(layer.tracks.y, startTime, fps);
+    const endKey = keyNear(layer.tracks.x, endTime, fps) ?? keyNear(layer.tracks.y, endTime, fps);
     if (startKey?.interp !== "bezier" || (!startKey.motionOut && !endKey?.motionIn)) {
       return rawPositionAt(layer, t);
     }
@@ -345,7 +352,7 @@ export function positionAt(layer: Layer, t: number): { x: number; y: number } {
   return rawPositionAt(layer, t);
 }
 
-export function displayed(layer: Layer, prop: PropKey, t: number): number {
+export function displayed(layer: Layer, prop: PropKey, t: number, fps = DEFAULT_FPS): number {
   const color = prop === "fill" || prop === "stroke";
   const fallback =
     prop === "fill"
@@ -354,19 +361,19 @@ export function displayed(layer: Layer, prop: PropKey, t: number): number {
         ? (layer.rest.stroke ?? colorToNumber(layer.stroke))
         : (layer.rest[prop] ?? defaultRest()[prop]);
   const v = sample(layer.tracks[prop], t, fallback, color);
-  if (prop === "x" || prop === "y") return positionAt(layer, t)[prop];
+  if (prop === "x" || prop === "y") return positionAt(layer, t, fps)[prop];
   return v;
 }
 
-export function pose(layer: Layer, t: number) {
-  const position = positionAt(layer, t);
+export function pose(layer: Layer, t: number, fps = DEFAULT_FPS) {
+  const position = positionAt(layer, t, fps);
   return {
-    opacity: displayed(layer, "opacity", t),
+    opacity: displayed(layer, "opacity", t, fps),
     dx: position.x - layer.x,
     dy: position.y - layer.y,
-    rotate: displayed(layer, "rotate", t),
-    scale: displayed(layer, "scale", t),
-    scaleY: displayed(layer, "scaleY", t),
+    rotate: displayed(layer, "rotate", t, fps),
+    scale: displayed(layer, "scale", t, fps),
+    scaleY: displayed(layer, "scaleY", t, fps),
   };
 }
 
@@ -375,9 +382,10 @@ export function motionBlurVector(
   t: number,
   duration: number,
   strength: number,
+  fps = DEFAULT_FPS,
 ): { x: number; y: number } {
   if (strength <= 0 || duration <= 0) return { x: 0, y: 0 };
-  const sampleOffset = 0.5 / FPS;
+  const sampleOffset = 0.5 / fps;
   const fromTime = Math.max(0, t - sampleOffset);
   const toTime = Math.min(duration, t + sampleOffset);
   if (toTime - fromTime <= 1e-6) return { x: 0, y: 0 };
@@ -391,7 +399,7 @@ export function motionBlurVector(
     [layer.x + layer.w, layer.y + layer.h],
   ] as const;
   const pointsAt = (time: number) => {
-    const current = pose(layer, time);
+    const current = pose(layer, time, fps);
     const angle = (current.rotate * Math.PI) / 180;
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
@@ -650,7 +658,7 @@ export function demoLayers(): Layer[] {
   const topLabel = text("brand-label-top", "品牌标识", "KAIRO  /  MOTION STUDIO", 450, 216, 470, 38, 24, blue, 600);
   animate(topLabel, "opacity", [[0.2, 0], [0.7, 1], [DEMO_DURATION, 0.68, "linear"]]);
   animate(topLabel, "x", [[0.2, -36], [0.8, 0]]);
-  const topMeta = text("brand-label-meta", "画面规格", "SVG  ·  VECTOR  ·  30 FPS", 1480, 216, 460, 38, 22, muted, 500);
+  const topMeta = text("brand-label-meta", "画面规格", "SVG  ·  VECTOR  ·  MOTION", 1480, 216, 460, 38, 22, muted, 500);
   animate(topMeta, "opacity", [[0.55, 0], [1.15, 0.8], [DEMO_DURATION, 0.52, "linear"]]);
   animate(topMeta, "x", [[0.55, 44], [1.2, 0]]);
 
@@ -752,8 +760,8 @@ export function demoLayers(): Layer[] {
   return layers;
 }
 
-export function svgTransform(layer: Layer, t: number): string {
-  const p = pose(layer, t);
+export function svgTransform(layer: Layer, t: number, fps = DEFAULT_FPS): string {
+  const p = pose(layer, t, fps);
   const cx = layer.x + layer.w / 2;
   const cy = layer.y + layer.h / 2;
   return `translate(${p.dx} ${p.dy}) translate(${cx} ${cy}) rotate(${p.rotate}) scale(${p.scale} ${p.scaleY}) translate(${-cx} ${-cy})`;
@@ -770,8 +778,9 @@ export function buildExport(
   },
   motionBlur: MotionBlurSettings = { enabled: false, strength: 6 },
   transparentBackground = false,
+  fps = DEFAULT_FPS,
 ): string {
-  const step = 1 / 15;
+  const step = 1 / fps;
   let css = "";
   const parts: string[] = [];
   const filters: string[] = [];
@@ -784,7 +793,7 @@ export function buildExport(
       for (let t = 0; t < duration; t += step) sampleTimes.push(t);
       if (sampleTimes.length === 0 || sampleTimes.at(-1)! < duration) sampleTimes.push(duration);
       const vectors = sampleTimes.map((t) =>
-        motionBlurVector(layer, t, duration, motionBlur.strength),
+        motionBlurVector(layer, t, duration, motionBlur.strength, fps),
       );
       if (vectors.some((vector) => vector.x > 0.15 || vector.y > 0.15)) {
         const id = `motion-blur-${layer.id}`;
@@ -802,7 +811,7 @@ export function buildExport(
       }
     }
     if (!animated || !layer.visible) {
-      parts.push(layerMarkup(layer, 0, false, motionFilters.get(layer.id)));
+      parts.push(layerMarkup(layer, 0, false, motionFilters.get(layer.id), fps));
       continue;
     }
     let body = "";
@@ -810,20 +819,20 @@ export function buildExport(
     for (let t = 0; t <= end + 1e-6; t += step) {
       const clamped = Math.min(t, duration);
       const pct = duration <= 0 ? 0 : (clamped / duration) * 100;
-      const p = pose(layer, clamped);
+      const p = pose(layer, clamped, fps);
       const cx = layer.x + layer.w / 2;
       const cy = layer.y + layer.h / 2;
       const fill =
         layer.fill === "none" && layer.tracks.fill.length === 0
           ? "none"
-          : numberToColor(displayed(layer, "fill", clamped));
-      const stroke = numberToColor(displayed(layer, "stroke", clamped));
-      const strokeWidth = displayed(layer, "strokeWidth", clamped);
+          : numberToColor(displayed(layer, "fill", clamped, fps));
+      const stroke = numberToColor(displayed(layer, "stroke", clamped, fps));
+      const strokeWidth = displayed(layer, "strokeWidth", clamped, fps);
       body += `    ${pct.toFixed(2)}% { opacity: ${p.opacity}; fill: ${fill}; stroke: ${stroke}; stroke-width: ${strokeWidth}; transform: translate(${p.dx}px, ${p.dy}px) translate(${cx}px, ${cy}px) rotate(${p.rotate}deg) scale(${p.scale}, ${p.scaleY}) translate(${-cx}px, ${-cy}px); }\n`;
     }
     css += `@keyframes ${layer.id}_anim {\n${body}}\n`;
     css += `#${layer.id} { animation: ${layer.id}_anim ${duration}s linear infinite; transform-box: view-box; }\n`;
-    parts.push(layerMarkup(layer, 0, true, motionFilters.get(layer.id)));
+    parts.push(layerMarkup(layer, 0, true, motionFilters.get(layer.id), fps));
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.exportWidth}" height="${dimensions.exportHeight}" viewBox="0 0 ${dimensions.projectWidth} ${dimensions.projectHeight}">
@@ -845,6 +854,7 @@ export function buildFrameExport(
   dimensions: ExportDimensions,
   motionBlur: MotionBlurSettings = { enabled: false, strength: 6 },
   transparentBackground = false,
+  fps = DEFAULT_FPS,
 ): string {
   const filters: string[] = [];
   const parts: string[] = [];
@@ -852,7 +862,7 @@ export function buildFrameExport(
     if (!layer.visible) continue;
     let filterId: string | undefined;
     if (motionBlur.enabled) {
-      const vector = motionBlurVector(layer, time, duration, motionBlur.strength);
+      const vector = motionBlurVector(layer, time, duration, motionBlur.strength, fps);
       if (vector.x > 0.1 || vector.y > 0.1) {
         filterId = `motion-blur-frame-${layer.id}`;
         const region = motionBlurFilterRegion(layer, vector);
@@ -861,7 +871,7 @@ export function buildFrameExport(
         );
       }
     }
-    parts.push(layerMarkup(layer, time, false, filterId));
+    parts.push(layerMarkup(layer, time, false, filterId, fps));
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.exportWidth}" height="${dimensions.exportHeight}" viewBox="0 0 ${dimensions.projectWidth} ${dimensions.projectHeight}">
@@ -871,17 +881,23 @@ export function buildFrameExport(
 </svg>`;
 }
 
-function layerMarkup(layer: Layer, t: number, animated: boolean, filterId?: string): string {
-  const p = pose(layer, t);
+function layerMarkup(
+  layer: Layer,
+  t: number,
+  animated: boolean,
+  filterId?: string,
+  fps = DEFAULT_FPS,
+): string {
+  const p = pose(layer, t, fps);
   const fill =
     layer.fill === "none" && layer.tracks.fill.length === 0
       ? "none"
-      : numberToColor(displayed(layer, "fill", t));
-  const stroke = numberToColor(displayed(layer, "stroke", t));
-  const strokeWidth = displayed(layer, "strokeWidth", t);
+      : numberToColor(displayed(layer, "fill", t, fps));
+  const stroke = numberToColor(displayed(layer, "stroke", t, fps));
+  const strokeWidth = displayed(layer, "strokeWidth", t, fps);
   const common = animated
     ? `id="${layer.id}"${filterId ? ` filter="url(#${filterId})"` : ""}`
-    : `opacity="${p.opacity}" transform="${svgTransform(layer, t)}"${filterId ? ` filter="url(#${filterId})"` : ""}`;
+    : `opacity="${p.opacity}" transform="${svgTransform(layer, t, fps)}"${filterId ? ` filter="url(#${filterId})"` : ""}`;
   if (layer.kind === "image") {
     return `<image ${common} x="${layer.x}" y="${layer.y}" width="${layer.w}" height="${layer.h}" href="${escapeXml(layer.imageSrc ?? "")}" preserveAspectRatio="none"/>`;
   }

@@ -15,7 +15,7 @@ export function KeyNav({
   const armed = useDoc((s) => s.layers.find((l) => l.id === layerId)?.armed[prop] ?? false);
   const has = useDoc((s) => {
     const layer = s.layers.find((l) => l.id === layerId);
-    return layer ? Boolean(keyNear(layer.tracks[prop], s.time)) : false;
+    return layer ? Boolean(keyNear(layer.tracks[prop], s.time, s.fps)) : false;
   });
   const toggleArm = useDoc((s) => s.toggleArm);
   const toggleKey = useDoc((s) => s.toggleKey);

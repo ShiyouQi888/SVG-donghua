@@ -6,10 +6,11 @@ import {
   type MotionTangent,
   type PersistedDoc,
   type PropKey,
+  type FrameRate,
   type ShapeKind,
   type Tool,
   type VectorPathPoint,
-  FPS,
+  DEFAULT_FPS,
   PROPS,
   colorToNumber,
   defaultRest,
@@ -24,6 +25,7 @@ import {
   keyNear,
   makeLayer,
   nid,
+  normalizeFrameRate,
   numberToColor,
   sample,
   snapTime,
@@ -46,6 +48,7 @@ export type CopiedKeyframe = {
 
 type DocState = {
   duration: number;
+  fps: FrameRate;
   loop: boolean;
   time: number;
   playing: boolean;
@@ -76,6 +79,7 @@ type Actions = {
   toggleLoop: () => void;
   stop: () => void;
   setDuration: (d: number) => void;
+  setFps: (fps: number) => void;
   setProjectSize: (width: number, height: number) => void;
   setExportSize: (width: number, height: number) => void;
   toggleSafeArea: () => void;
@@ -165,6 +169,7 @@ type Actions = {
 type HistoryFrame = Pick<
   DocState,
   | "duration"
+  | "fps"
   | "pxPerSec"
   | "projectWidth"
   | "projectHeight"
@@ -192,6 +197,7 @@ let applyingHistory = false;
 function historyFrame(state: DocState): HistoryFrame {
   return {
     duration: state.duration,
+    fps: state.fps,
     pxPerSec: state.pxPerSec,
     projectWidth: state.projectWidth,
     projectHeight: state.projectHeight,
@@ -214,6 +220,7 @@ function historyFrame(state: DocState): HistoryFrame {
 function hasDocumentChange(next: DocState, previous: DocState): boolean {
   return (
     next.duration !== previous.duration ||
+    next.fps !== previous.fps ||
     next.projectWidth !== previous.projectWidth ||
     next.projectHeight !== previous.projectHeight ||
     next.exportWidth !== previous.exportWidth ||
@@ -235,8 +242,14 @@ function sortTrack(track: Keyframe[]): Keyframe[] {
   return [...track].sort((a, b) => a.t - b.t);
 }
 
-function upsert(track: Keyframe[], t: number, v: number, interp: Interp = "ease"): Keyframe[] {
-  const hit = keyNear(track, t);
+function upsert(
+  track: Keyframe[],
+  t: number,
+  v: number,
+  interp: Interp = "ease",
+  fps = DEFAULT_FPS,
+): Keyframe[] {
+  const hit = keyNear(track, t, fps);
   if (hit) {
     return sortTrack(track.map((k) => (k.id === hit.id ? { ...k, t, v } : k)));
   }
@@ -253,6 +266,16 @@ function safeDimension(value: number, fallback: number): number {
 
 function safeBlurStrength(value: number): number {
   return Number.isFinite(value) ? Math.min(12, Math.max(0, value)) : 6;
+}
+
+function normalizeTrackFrameRate(track: Keyframe[], duration: number, fps: number): Keyframe[] {
+  const result: Keyframe[] = [];
+  for (const key of sortTrack(track).map((item) => ({ ...item, t: snapTime(item.t, duration, fps) }))) {
+    const previous = result.at(-1);
+    if (previous && Math.abs(previous.t - key.t) < 0.5 / fps) result[result.length - 1] = key;
+    else result.push(key);
+  }
+  return result;
 }
 
 function isColorProp(prop: PropKey): prop is "fill" | "stroke" {
@@ -297,6 +320,7 @@ function writeProp(
   absolute: number,
   time: number,
   autoKey: boolean,
+  fps: number,
 ): Layer {
   const next: Layer = {
     ...layer,
@@ -308,7 +332,7 @@ function writeProp(
   if (prop === "fill" || prop === "stroke" || prop === "strokeWidth") {
     if (shouldKey) {
       next.armed[prop] = true;
-      next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999), absolute);
+      next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999, fps), absolute, "ease", fps);
       return next;
     }
     return setBaseValue(next, prop, absolute);
@@ -318,7 +342,7 @@ function writeProp(
     const offset = absolute - base;
     if (shouldKey) {
       next.armed[prop] = true;
-      next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999), offset);
+      next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999, fps), offset, "ease", fps);
     } else if (prop === "x") {
       next.x = absolute;
       next.rest.x = 0;
@@ -330,7 +354,7 @@ function writeProp(
   }
   if (shouldKey) {
     next.armed[prop] = true;
-    next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999), absolute);
+    next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999, fps), absolute, "ease", fps);
   } else {
     next.rest[prop] = absolute;
   }
@@ -341,6 +365,7 @@ const initialLayers = demoLayers();
 
 export const useDoc = create<DocState & Actions>((set, get) => ({
   duration: DEMO_DURATION,
+  fps: DEFAULT_FPS,
   loop: true,
   time: 0,
   playing: true,
@@ -366,14 +391,14 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
 
   setTime: (t) => set({ time: Math.min(get().duration, Math.max(0, t)) }),
   togglePlay: () => {
-    const { playing, time, duration } = get();
-    if (!playing && time >= duration - 1 / FPS) set({ time: 0, playing: true });
+    const { playing, time, duration, fps } = get();
+    if (!playing && time >= duration - 1 / fps) set({ time: 0, playing: true });
     else set({ playing: !playing });
   },
   toggleLoop: () => set({ loop: !get().loop }),
   stop: () => set({ playing: false, time: 0 }),
   setDuration: (d) => {
-    const duration = Math.min(30, Math.max(0.5, d));
+    const duration = Number.isFinite(d) ? Math.min(30, Math.max(0.5, d)) : get().duration;
     set({
       duration,
       time: Math.min(get().time, duration),
@@ -384,6 +409,23 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         }
         return { ...layer, tracks };
       }),
+    });
+  },
+  setFps: (requestedFps) => {
+    const state = get();
+    const fps = normalizeFrameRate(requestedFps, state.fps);
+    if (fps === state.fps) return;
+    const layers = state.layers.map((layer) => {
+      const tracks = { ...layer.tracks };
+      for (const prop of PROPS) tracks[prop] = normalizeTrackFrameRate(layer.tracks[prop], state.duration, fps);
+      return { ...layer, tracks };
+    });
+    set({
+      fps,
+      layers,
+      time: snapTime(state.time, state.duration, fps),
+      selectedKey: null,
+      selectedKeys: [],
     });
   },
   setProjectSize: (width, height) => {
@@ -562,10 +604,10 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     });
   },
   setDisplayed: (id, prop, absolute, forceKey = false) => {
-    const { time, autoKey, duration } = get();
+    const { time, autoKey, duration, fps } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
-        const written = writeProp(layer, prop, absolute, time, autoKey || forceKey);
+        const written = writeProp(layer, prop, absolute, time, autoKey || forceKey, fps);
         const tracks = { ...written.tracks };
         tracks[prop] = tracks[prop].map((k) => ({ ...k, t: Math.min(k.t, duration) }));
         return { ...written, tracks };
@@ -580,22 +622,22 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       })),
     }),
   moveBy: (id, dx, dy, origin) => {
-    const { time, autoKey } = get();
+    const { time, autoKey, fps } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
         let next = layer;
         const armX = layer.armed.x || autoKey;
         const armY = layer.armed.y || autoKey;
-        if (armX) next = writeProp(next, "x", origin.x + origin.ox + dx, time, true);
+        if (armX) next = writeProp(next, "x", origin.x + origin.ox + dx, time, true, fps);
         else next = { ...next, x: origin.x + dx, rest: { ...next.rest, x: 0 } };
-        if (armY) next = writeProp(next, "y", origin.y + origin.oy + dy, time, true);
+        if (armY) next = writeProp(next, "y", origin.y + origin.oy + dy, time, true, fps);
         else next = { ...next, y: origin.y + dy, rest: { ...next.rest, y: 0 } };
         return next;
       }),
     });
   },
   toggleArm: (id, prop) => {
-    const { time } = get();
+    const { time, duration, fps } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
         if (layer.armed[prop]) {
@@ -619,17 +661,18 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
             ...layer.tracks,
             [prop]: layer.tracks[prop].length
               ? layer.tracks[prop]
-              : upsert([], snapTime(time, get().duration), current),
+              : upsert([], snapTime(time, duration, fps), current, "ease", fps),
           },
         };
       }),
     });
   },
   toggleKey: (id, prop) => {
-    const time = snapTime(get().time, get().duration);
+    const { duration, fps } = get();
+    const time = snapTime(get().time, duration, fps);
     set({
       layers: mapLayer(get().layers, id, (layer) => {
-        const hit = keyNear(layer.tracks[prop], time);
+        const hit = keyNear(layer.tracks[prop], time, fps);
         if (hit) {
           const track = layer.tracks[prop].filter((k) => k.id !== hit.id);
           if (track.length === 0) {
@@ -651,7 +694,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         return {
           ...layer,
           armed: { ...layer.armed, [prop]: true },
-          tracks: { ...layer.tracks, [prop]: upsert(layer.tracks[prop], time, current) },
+          tracks: { ...layer.tracks, [prop]: upsert(layer.tracks[prop], time, current, "ease", fps) },
         };
       }),
       selectedKey: null,
@@ -659,7 +702,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     });
   },
   punchKeys: (id) => {
-    const time = snapTime(get().time, get().duration);
+    const { time: currentTime, duration, fps } = get();
+    const time = snapTime(currentTime, duration, fps);
     set({
       layers: mapLayer(get().layers, id, (layer) => {
         const armedProps = PROPS.filter((p) => layer.armed[p]);
@@ -669,7 +713,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
           const current =
             prop === "x" || prop === "y"
               ? sample(next.tracks[prop], time, next.rest[prop])
-              : displayed(next, prop, time);
+              : displayed(next, prop, time, fps);
           if (prop === "x")
             next = writeProp(
               { ...next, armed: { ...next.armed, x: true } },
@@ -677,6 +721,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
               next.x + current,
               time,
               true,
+              fps,
             );
           else if (prop === "y")
             next = writeProp(
@@ -685,6 +730,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
               next.y + current,
               time,
               true,
+              fps,
             );
           else
             next = writeProp(
@@ -693,6 +739,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
               current,
               time,
               true,
+              fps,
             );
         }
         return next;
@@ -700,28 +747,29 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     });
   },
   stepProp: (id, prop, dir) => {
-    const layer = get().layers.find((l) => l.id === id);
+    const { layers, fps } = get();
+    const layer = layers.find((l) => l.id === id);
     if (!layer) return;
     const time = get().time;
     const track = [...layer.tracks[prop]].sort((a, b) => a.t - b.t);
     const target =
       dir < 0
-        ? [...track].reverse().find((k) => k.t < time - NEAR)
-        : track.find((k) => k.t > time + NEAR);
+        ? [...track].reverse().find((k) => k.t < time - 0.5 / fps)
+        : track.find((k) => k.t > time + 0.5 / fps);
     if (target) {
       const selectedKey = { layerId: id, prop, id: target.id };
       set({ time: target.t, playing: false, selectedKey, selectedKeys: [selectedKey] });
     }
   },
   stepAny: (dir) => {
-    const { selectedId, layers, time } = get();
+    const { selectedId, layers, time, fps } = get();
     const layer = layers.find((l) => l.id === selectedId);
     if (!layer) return;
     const keys = PROPS.flatMap((prop) => layer.tracks[prop].map((k) => ({ ...k, prop })));
     const target =
       dir < 0
-        ? keys.filter((k) => k.t < time - 1 / FPS).sort((a, b) => b.t - a.t)[0]
-        : keys.filter((k) => k.t > time + 1 / FPS).sort((a, b) => a.t - b.t)[0];
+        ? keys.filter((k) => k.t < time - 1 / fps).sort((a, b) => b.t - a.t)[0]
+        : keys.filter((k) => k.t > time + 1 / fps).sort((a, b) => a.t - b.t)[0];
     if (target)
       set({
         time: target.t,
@@ -761,11 +809,12 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     });
   },
   moveKey: (id, prop, keyId, t) => {
-    const time = snapTime(t, get().duration);
+    const { duration, fps } = get();
+    const time = snapTime(t, duration, fps);
     set({
       layers: mapLayer(get().layers, id, (layer) => {
         const without = layer.tracks[prop].filter(
-          (k) => k.id !== keyId && Math.abs(k.t - time) >= 0.5 / FPS,
+          (k) => k.id !== keyId && Math.abs(k.t - time) >= 0.5 / fps,
         );
         const current = layer.tracks[prop].find((k) => k.id === keyId);
         if (!current) return layer;
@@ -778,7 +827,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   },
   moveKeys: (keys, delta) => {
     if (keys.length === 0) return;
-    const duration = get().duration;
+    const { duration, fps } = get();
     const minDelta = Math.max(...keys.map((key) => -key.t));
     const maxDelta = Math.min(...keys.map((key) => duration - key.t));
     const boundedDelta = Math.min(maxDelta, Math.max(minDelta, delta));
@@ -793,7 +842,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
           const updated = layer.tracks[prop].map((key) => {
             if (!movingIds.has(key.id)) return key;
             const origin = moves.get(`${layer.id}:${prop}:${key.id}`);
-            return origin ? { ...key, t: snapTime(origin.t + boundedDelta, duration) } : key;
+            return origin ? { ...key, t: snapTime(origin.t + boundedDelta, duration, fps) } : key;
           });
           const movingTimes = new Map(
             updated.filter((key) => movingIds.has(key.id)).map((key) => [key.id, key.t]),
@@ -801,7 +850,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
           tracks[prop] = sortTrack(
             updated.filter((key) => {
               if (movingIds.has(key.id)) return true;
-              return ![...movingTimes.values()].some((time) => Math.abs(key.t - time) < 0.5 / FPS);
+              return ![...movingTimes.values()].some((time) => Math.abs(key.t - time) < 0.5 / fps);
             }),
           );
         }
@@ -829,10 +878,10 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       const tracks = { ...layer.tracks };
       const armed = { ...layer.armed };
       for (const item of targets) {
-        const time = snapTime(atTime + item.offset, state.duration);
+        const time = snapTime(atTime + item.offset, state.duration, state.fps);
         const id = nid("k");
         tracks[item.prop] = sortTrack([
-          ...tracks[item.prop].filter((key) => Math.abs(key.t - time) >= 0.5 / FPS),
+          ...tracks[item.prop].filter((key) => Math.abs(key.t - time) >= 0.5 / state.fps),
           {
             id,
             t: time,
@@ -937,7 +986,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
           [prop]: sortTrack(
             layer.tracks[prop].map((k) => {
               if (k.id !== keyId) return k;
-              const t = patch.t === undefined ? k.t : snapTime(patch.t, get().duration);
+              const state = get();
+              const t = patch.t === undefined ? k.t : snapTime(patch.t, state.duration, state.fps);
               return { ...k, ...patch, t };
             }),
           ),
@@ -1008,6 +1058,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       layers,
       duration: DEMO_DURATION,
+      fps: DEFAULT_FPS,
       loop: true,
       projectWidth: DEMO_WIDTH,
       projectHeight: DEMO_HEIGHT,
@@ -1042,6 +1093,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const projectHeight = safeDimension(doc.projectHeight ?? 500, 500);
     set({
       duration: doc.duration || 3,
+      fps: normalizeFrameRate(doc.fps),
       loop: doc.loop ?? true,
       pxPerSec: doc.pxPerSec || 120,
       projectWidth,
@@ -1065,6 +1117,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   snapshot: () => {
     const {
       duration,
+      fps,
       loop,
       pxPerSec,
       projectWidth,
@@ -1079,6 +1132,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     } = get();
     return {
       duration,
+      fps,
       loop,
       pxPerSec,
       projectWidth,
@@ -1107,8 +1161,6 @@ useDoc.subscribe((state, previous) => {
   undoFuture.length = 0;
   useDoc.setState({ undoCount: undoPast.length, redoCount: 0 });
 });
-
-const NEAR = 0.5 / FPS;
 
 export function loadSnapshot(): PersistedDoc | null {
   try {

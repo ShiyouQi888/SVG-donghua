@@ -11,7 +11,7 @@ import {
   Undo2,
   Upload,
 } from "lucide-react";
-import { FPS, snapTime, type Tool } from "@/lib/animator/model";
+import { DEFAULT_FPS, FRAME_RATE_OPTIONS, snapTime, type Tool } from "@/lib/animator/model";
 import { getProjectAsset, projectAssetImageSource } from "@/lib/animator/project-assets";
 import { loadSnapshot, saveSnapshot, useDoc } from "@/lib/animator/store";
 import { Stage } from "./Stage";
@@ -53,10 +53,14 @@ export function Editor() {
   const replace = useDoc((s) => s.replace);
   const projectWidth = useDoc((s) => s.projectWidth);
   const projectHeight = useDoc((s) => s.projectHeight);
+  const duration = useDoc((s) => s.duration);
+  const fps = useDoc((s) => s.fps);
   const exportWidth = useDoc((s) => s.exportWidth);
   const exportHeight = useDoc((s) => s.exportHeight);
   const setProjectSize = useDoc((s) => s.setProjectSize);
   const setExportSize = useDoc((s) => s.setExportSize);
+  const setDuration = useDoc((s) => s.setDuration);
+  const setFps = useDoc((s) => s.setFps);
 
   const placeProjectAsset = async (assetId: string, position?: { x: number; y: number }) => {
     try {
@@ -108,6 +112,7 @@ export function Editor() {
     const unsub = useDoc.subscribe((state, previous) => {
       if (
         state.duration === previous.duration &&
+        state.fps === previous.fps &&
         state.loop === previous.loop &&
         state.pxPerSec === previous.pxPerSec &&
         state.projectWidth === previous.projectWidth &&
@@ -126,6 +131,7 @@ export function Editor() {
       timer = window.setTimeout(() => {
         saveSnapshot({
           duration: state.duration,
+          fps: state.fps,
           loop: state.loop,
           pxPerSec: state.pxPerSec,
           projectWidth: state.projectWidth,
@@ -151,21 +157,26 @@ export function Editor() {
     let last = performance.now();
     let wasPlaying = false;
     let frameAccumulator = 0;
+    let previousFps = DEFAULT_FPS;
     const loop = (now: number) => {
       const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
       let state = useDoc.getState();
+      if (state.fps !== previousFps) {
+        frameAccumulator = 0;
+        previousFps = state.fps;
+      }
       if (state.playing) {
         if (!wasPlaying) {
           frameAccumulator = 0;
-          state.setTime(snapTime(state.time, state.duration));
+          state.setTime(snapTime(state.time, state.duration, state.fps));
         }
         frameAccumulator += dt;
-        const framesToAdvance = Math.floor(frameAccumulator * FPS + 1e-6);
+        const framesToAdvance = Math.floor(frameAccumulator * state.fps + 1e-6);
         if (framesToAdvance > 0) {
-          frameAccumulator -= framesToAdvance / FPS;
+          frameAccumulator -= framesToAdvance / state.fps;
           state = useDoc.getState();
-          const next = state.time + framesToAdvance / FPS;
+          const next = state.time + framesToAdvance / state.fps;
           if (next >= state.duration) {
             if (state.loop) state.setTime(0);
             else {
@@ -322,7 +333,7 @@ export function Editor() {
                 {projectWidth}×{projectHeight}
               </span>
             </summary>
-            <div className="absolute right-0 top-full z-50 mt-2 w-72 space-y-3 rounded-lg border border-border bg-surface p-3 shadow-2xl">
+            <div className="absolute right-0 top-full z-50 mt-2 w-80 space-y-3 rounded-lg border border-border bg-surface p-3 shadow-2xl">
               <SizeRow
                 title="项目尺寸"
                 width={projectWidth}
@@ -354,6 +365,45 @@ export function Editor() {
                   })}
                 </div>
               </div>
+              <div className="h-px bg-border" />
+              <div className="grid grid-cols-2 gap-2">
+                <label className="flex flex-col gap-1 text-xs text-muted">
+                  动画时长
+                  <span className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={30}
+                      step={0.5}
+                      value={duration}
+                      aria-label="画布动画时长"
+                      onChange={(event) => {
+                        if (event.target.value !== "") setDuration(Number(event.target.value));
+                      }}
+                      className="w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-sm text-fg"
+                    />
+                    <span>s</span>
+                  </span>
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-muted">
+                  帧率
+                  <select
+                    aria-label="画布帧率"
+                    value={fps}
+                    onChange={(event) => setFps(Number(event.target.value))}
+                    className="w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-sm text-fg"
+                  >
+                    {FRAME_RATE_OPTIONS.map((rate) => (
+                      <option key={rate} value={rate}>
+                        {rate} fps
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <p className="text-[11px] leading-4 text-muted">
+                时长和帧率会立即应用到当前项目、时间线、播放与导出。
+              </p>
               <div className="h-px bg-border" />
               <SizeRow
                 title="导出尺寸"

@@ -150,13 +150,13 @@ function pathPoint(x: number, y: number): VectorPathPoint {
   return { x, y, inX: x, inY: y, outX: x, outY: y };
 }
 
-function ShapeBody({ layer, time }: { layer: Layer; time: number }) {
+function ShapeBody({ layer, time, fps }: { layer: Layer; time: number; fps: number }) {
   const fill =
     layer.fill === "none" && layer.tracks.fill.length === 0
       ? "none"
-      : numberToColor(displayed(layer, "fill", time));
-  const stroke = numberToColor(displayed(layer, "stroke", time));
-  const strokeWidth = displayed(layer, "strokeWidth", time);
+      : numberToColor(displayed(layer, "fill", time, fps));
+  const stroke = numberToColor(displayed(layer, "stroke", time, fps));
+  const strokeWidth = displayed(layer, "strokeWidth", time, fps);
   if (layer.kind === "image") {
     return (
       <image
@@ -313,6 +313,7 @@ export function Stage({
   const projectWidth = useDoc((s) => s.projectWidth);
   const projectHeight = useDoc((s) => s.projectHeight);
   const duration = useDoc((s) => s.duration);
+  const fps = useDoc((s) => s.fps);
   const safeArea = useDoc((s) => s.safeArea);
   const snapEnabled = useDoc((s) => s.snapEnabled);
   const motionBlur = useDoc((s) => s.motionBlur);
@@ -505,11 +506,11 @@ export function Stage({
     if (times.length === 0) return null;
     const pointAt = (at: number) => ({
       t: at,
-      x: displayed(selectedLayer, "x", at) + selectedLayer.w / 2,
-      y: displayed(selectedLayer, "y", at) + selectedLayer.h / 2,
+      x: displayed(selectedLayer, "x", at, fps) + selectedLayer.w / 2,
+      y: displayed(selectedLayer, "y", at, fps) + selectedLayer.h / 2,
     });
     const keyframes = times.map(pointAt);
-    const keyAt = (at: number) => keyNear(selectedLayer.tracks.x, at) ?? keyNear(selectedLayer.tracks.y, at);
+    const keyAt = (at: number) => keyNear(selectedLayer.tracks.x, at, fps) ?? keyNear(selectedLayer.tracks.y, at, fps);
     const controls: MotionControl[] = times.slice(0, -1).flatMap((startTime, index) => {
       const endTime = times[index + 1];
       const startKey = keyAt(startTime);
@@ -542,7 +543,7 @@ export function Stage({
       }
     }
     return { keyframes, pathData: commands.join(" "), controls };
-  }, [selectedLayer]);
+  }, [selectedLayer, fps]);
 
   const blurByLayer = new Map(
     motionBlur
@@ -550,7 +551,7 @@ export function Stage({
           .filter((layer) => layer.visible)
           .map(
             (layer) =>
-              [layer.id, motionBlurVector(layer, time, duration, motionBlurStrength)] as const,
+              [layer.id, motionBlurVector(layer, time, duration, motionBlurStrength, fps)] as const,
           )
           .filter(([, blur]) => blur.x > 0.1 || blur.y > 0.1)
       : [],
@@ -806,8 +807,8 @@ export function Stage({
                 const xTargets = [0, projectWidth / 2, projectWidth];
                 const yTargets = [0, projectHeight / 2, projectHeight];
                 for (const other of others) {
-                  const x = displayed(other, "x", time);
-                  const y = displayed(other, "y", time);
+                  const x = displayed(other, "x", time, fps);
+                  const y = displayed(other, "y", time, fps);
                   xTargets.push(x, x + other.w / 2, x + other.w);
                   yTargets.push(y, y + other.h / 2, y + other.h);
                 }
@@ -992,7 +993,7 @@ export function Stage({
             className="stage-canvas-boundary"
           />
           {layers.map((layer) => {
-            const p = pose(layer, time);
+            const p = pose(layer, time, fps);
             const selected = layer.id === selectedId;
             const allHandles = [
               { id: "nw", x: layer.x - 4, y: layer.y - 4, hx: -1, hy: -1, cursor: "nwse-resize" },
@@ -1061,7 +1062,7 @@ export function Stage({
               <g
                 key={layer.id}
                 data-layer-id={layer.id}
-                transform={svgTransform(layer, time)}
+                transform={svgTransform(layer, time, fps)}
                 style={{ pointerEvents: layer.visible ? "auto" : "none" }}
                 onPointerDown={(event) => {
                   if (tool !== "select") return;
@@ -1108,8 +1109,8 @@ export function Stage({
                     sy: point.y,
                     x: live.x,
                     y: live.y,
-                    ox: pose(live, now).dx,
-                    oy: pose(live, now).dy,
+                    ox: pose(live, now, useDoc.getState().fps).dx,
+                    oy: pose(live, now, useDoc.getState().fps).dy,
                   };
                   beginPointerUndo();
                   svg.setPointerCapture(event.pointerId);
@@ -1119,7 +1120,7 @@ export function Stage({
                   opacity={layer.visible ? p.opacity : 0}
                   filter={blurByLayer.has(layer.id) ? `url(#motion-blur-${layer.id})` : undefined}
                 >
-                  <ShapeBody layer={layer} time={time} />
+                  <ShapeBody layer={layer} time={time} fps={fps} />
                 </g>
                 {textEdit?.id === layer.id && layer.kind === "text" && (
                   <foreignObject x={layer.x} y={layer.y} width={layer.w} height={layer.h}>
@@ -1205,7 +1206,7 @@ export function Stage({
                           if (!svg) return;
                           selectLayer(layer.id);
                           const point = svgPoint(svg, event);
-                          const currentPose = pose(layer, time);
+                          const currentPose = pose(layer, time, fps);
                           resize.current = {
                             id: layer.id,
                             sx: point.x,
@@ -1327,8 +1328,8 @@ export function Stage({
                 </g>
               ))}
               <circle
-                cx={displayed(selectedLayer, "x", time) + selectedLayer.w / 2}
-                cy={displayed(selectedLayer, "y", time) + selectedLayer.h / 2}
+                cx={displayed(selectedLayer, "x", time, fps) + selectedLayer.w / 2}
+                cy={displayed(selectedLayer, "y", time, fps) + selectedLayer.h / 2}
                 r={7}
                 className="stage-motion-path-current"
               />

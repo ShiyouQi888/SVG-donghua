@@ -35,7 +35,7 @@ function readSavedTemplates(): SavedTemplate[] {
   }
 }
 
-function applyMotionPreset(layerId: string, template: MotionTemplate, duration: number) {
+function applyMotionPreset(layerId: string, template: MotionTemplate, duration: number, fps: number) {
   const state = useDoc.getState();
   const layer = state.layers.find((item) => item.id === layerId);
   if (!layer) return;
@@ -44,7 +44,7 @@ function applyMotionPreset(layerId: string, template: MotionTemplate, duration: 
     for (const recipe of template.tracks) {
       const keys = recipe.frames.map((frame) => ({
         id: nid("kf"),
-        t: snapTime(duration * frame.at, duration),
+        t: snapTime(duration * frame.at, duration, fps),
         v: typeof frame.value === "string" ? colorToNumber(frame.value) : frame.value,
         interp: frame.interp ?? "ease",
         bezier: { ...DEFAULT_BEZIER },
@@ -92,7 +92,10 @@ function applyLayerTemplate(template: LayerTemplate) {
     });
     useDoc.getState().rename(id, template.name);
     const motion = motionTemplateById(template.motionId);
-    if (motion) applyMotionPreset(id, motion, useDoc.getState().duration);
+    if (motion) {
+      const state = useDoc.getState();
+      applyMotionPreset(id, motion, state.duration, state.fps);
+    }
   } finally {
     useDoc.getState().endUndoGroup();
   }
@@ -229,6 +232,7 @@ export function TemplatePanel() {
   const selectedId = useDoc((state) => state.selectedId);
   const selectedLayer = useDoc((state) => state.layers.find((layer) => layer.id === state.selectedId));
   const duration = useDoc((state) => state.duration);
+  const fps = useDoc((state) => state.fps);
   const projectWidth = useDoc((state) => state.projectWidth);
   const projectHeight = useDoc((state) => state.projectHeight);
   const [category, setCategory] = useState<CategoryFilter>("全部");
@@ -308,7 +312,7 @@ export function TemplatePanel() {
   };
 
   const applySelectedMotion = (template: MotionTemplate) => {
-    if (selectedId) applyMotionPreset(selectedId, template, duration);
+    if (selectedId) applyMotionPreset(selectedId, template, duration, fps);
   };
 
   return (

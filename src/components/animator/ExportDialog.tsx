@@ -14,14 +14,15 @@ const FORMATS: { id: Format; label: string; detail: string }[] = [
   { id: "svg", label: "SVG 动画", detail: "矢量 · 可无限放大" },
   { id: "code", label: "SVG 代码", detail: "查看并复制源码" },
   { id: "png", label: "PNG 图片", detail: "当前播放头 · 支持透明" },
-  { id: "webm", label: "WebM 视频", detail: "完整动画 · 30 fps" },
-  { id: "gif", label: "GIF 动图", detail: "完整动画 · 12 fps" },
+  { id: "webm", label: "WebM 视频", detail: "完整动画 · 项目帧率" },
+  { id: "gif", label: "GIF 动图", detail: "完整动画 · 项目帧率" },
 ];
 
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const exportWidth = useDoc((s) => s.exportWidth);
   const exportHeight = useDoc((s) => s.exportHeight);
   const duration = useDoc((s) => s.duration);
+  const fps = useDoc((s) => s.fps);
   const time = useDoc((s) => s.time);
   const [format, setFormat] = useState<Format>("svg");
   const [transparent, setTransparent] = useState(false);
@@ -42,6 +43,12 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
   if (!open) return null;
 
+  const formats = FORMATS.map((item) =>
+    item.id === "webm" || item.id === "gif"
+      ? { ...item, detail: `完整动画 · ${fps} fps` }
+      : item,
+  );
+
   const runExport = async () => {
     const state = useDoc.getState();
     const dimensions: ExportDimensions = {
@@ -57,6 +64,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     const shared = {
       layers: state.layers,
       duration: state.duration,
+      fps: state.fps,
       dimensions,
       motionBlur,
       transparentBackground: transparent,
@@ -76,6 +84,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
             dimensions,
             motionBlur,
             transparent,
+            state.fps,
           ),
         );
         return;
@@ -88,6 +97,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           dimensions,
           motionBlur,
           transparent,
+          state.fps,
         );
         download(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), "kairo.svg");
       } else if (format === "png") {
@@ -151,7 +161,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
 
         <div className="space-y-4 p-5">
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {FORMATS.map((item) => (
+            {formats.map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -230,7 +240,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           <footer className="flex items-center justify-between gap-3 border-t border-border pt-4">
             <p className="text-[11px] text-muted">
               动画时长 {duration} 秒
-              {format === "gif" ? " · GIF 按 12 fps 导出" : ""}
+              {format === "gif" || format === "webm" ? ` · ${fps} fps` : ""}
             </p>
             <button
               type="button"

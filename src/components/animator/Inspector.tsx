@@ -24,6 +24,7 @@ const INTERP_LABEL: Record<Interp, string> = {
 export function Inspector() {
   const layer = useDoc((s) => s.layers.find((l) => l.id === s.selectedId));
   const time = useDoc((s) => s.time);
+  const fps = useDoc((s) => s.fps);
   const selectedKey = useDoc((s) => s.selectedKey);
   const setDisplayed = useDoc((s) => s.setDisplayed);
   const setPaint = useDoc((s) => s.setPaint);
@@ -60,7 +61,7 @@ export function Inspector() {
           />
         </div>
 
-        <PositionNudge layer={layer} time={time} setDisplayed={setDisplayed} />
+        <PositionNudge layer={layer} time={time} fps={fps} setDisplayed={setDisplayed} />
 
         <section className="space-y-2">
           <h2 className="text-xs font-medium tracking-wide text-muted">外观</h2>
@@ -305,10 +306,12 @@ export function Inspector() {
 function PositionNudge({
   layer,
   time,
+  fps,
   setDisplayed,
 }: {
   layer: Layer;
   time: number;
+  fps: number;
   setDisplayed: (id: string, prop: PropKey, value: number) => void;
 }) {
   const [step, setStep] = useState(10);
@@ -316,8 +319,8 @@ function PositionNudge({
   const cycleStep = () => setStep((current) => steps[(steps.indexOf(current) + 1) % steps.length]);
 
   function nudge(dx: number, dy: number) {
-    setDisplayed(layer.id, "x", displayed(layer, "x", time) + dx * step);
-    setDisplayed(layer.id, "y", displayed(layer, "y", time) + dy * step);
+    setDisplayed(layer.id, "x", displayed(layer, "x", time, fps) + dx * step);
+    setDisplayed(layer.id, "y", displayed(layer, "y", time, fps) + dy * step);
   }
 
   return (
