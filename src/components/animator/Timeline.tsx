@@ -1147,13 +1147,19 @@ function Ruler({
   const lastFrame = Math.max(0, Math.round(duration * fps));
   const pxPerFrame = px / fps;
   const baseSteps = [1, 2, 3, 6, 15, 30, 60, 90, 150, 300, 600, 900];
-  const majorSteps = [...new Set(baseSteps.map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
-    (a, b) => a - b,
-  );
+  const majorSteps =
+    timeDisplayMode === "frames"
+      ? [5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250, 500, 1000]
+      : [...new Set(baseSteps.map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
+          (a, b) => a - b,
+        );
   const majorStep = majorSteps.find((step) => step * pxPerFrame >= 40) ?? majorSteps.at(-1)!;
-  const minorSteps = [...new Set(baseSteps.slice(0, 6).map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
-    (a, b) => a - b,
-  );
+  const minorSteps =
+    timeDisplayMode === "frames"
+      ? [1, 2, 5, 10, 15, 20, 25, 30, 50, 75, 100, 150, 250, 500]
+      : [...new Set(baseSteps.slice(0, 6).map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
+          (a, b) => a - b,
+        );
   const minorStep =
     minorSteps.find((step) => step <= majorStep && majorStep % step === 0 && step * pxPerFrame >= 6) ??
     majorStep;
@@ -1167,7 +1173,8 @@ function Ruler({
     <div className="relative h-full" style={{ width }}>
       {frames.map((frame) => {
         const major = frame % majorStep === 0;
-        const label = major || (frame === lastFrame && labelEndpoint);
+        const endpointAllowed = timeDisplayMode === "timecode" || frame % 5 === 0;
+        const label = major || (frame === lastFrame && labelEndpoint && endpointAllowed);
         const time = frame / fps;
         return (
           <span
