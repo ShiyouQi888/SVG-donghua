@@ -101,6 +101,8 @@ type Actions = {
   addPath: (points: VectorPathPoint[], closed?: boolean) => void;
   setPathPoint: (id: string, index: number, point: VectorPathPoint) => void;
   moveLayer: (id: string, direction: "forward" | "backward" | "front" | "back") => void;
+  moveLayerToRow: (id: string, targetId: string, placement: "before" | "after") => void;
+  moveLayerClip: (id: string, deltaFrames: number) => void;
   setLayerClipRange: (id: string, inPoint: number, outPoint: number) => void;
   setMotionHandle: (id: string, keyId: string, side: "in" | "out", offset: MotionTangent) => void;
   deleteLayer: (id: string) => void;
@@ -307,6 +309,7 @@ function hydrateLayer(layer: Layer): Layer {
   }
   return {
     ...layer,
+    timelineOffset: Number.isFinite(layer.timelineOffset) ? layer.timelineOffset : undefined,
     scaleLinked: layer.scaleLinked ?? true,
     cornerRadius: layer.cornerRadius ?? 8,
     fontFamily: layer.fontFamily ?? "IBM Plex Sans, Source Han Sans SC, sans-serif",
@@ -545,6 +548,55 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     layers.splice(to, 0, layer);
     set({ layers });
   },
+  moveLayerToRow: (id, targetId, placement) => {
+    if (id === targetId) return;
+    const currentLayers = get().layers;
+    const rows = [...currentLayers].reverse();
+    const from = rows.findIndex((layer) => layer.id === id);
+    if (from < 0) return;
+    const [layer] = rows.splice(from, 1);
+    const targetIndex = rows.findIndex((item) => item.id === targetId);
+    if (targetIndex < 0) return;
+    rows.splice(targetIndex + (placement === "after" ? 1 : 0), 0, layer);
+    const layers = rows.reverse();
+    if (layers.every((item, index) => item.id === currentLayers[index]?.id)) return;
+    set({ layers });
+  },
+  moveLayerClip: (id, deltaFrames) => {
+    const state = get();
+    const layer = state.layers.find((item) => item.id === id);
+    if (!layer || !Number.isFinite(deltaFrames) || Math.round(deltaFrames) === 0) return;
+    const { duration, fps } = state;
+    const frame = 1 / fps;
+    const currentOffset = layer.timelineOffset ?? 0;
+    const range = layerClipRange(layer, duration, fps);
+    const baseIn = range.inPoint - currentOffset;
+    const baseOut = range.outPoint - currentOffset;
+    const minOffset = -baseOut + frame;
+    const maxOffset = duration - baseIn - frame;
+    const requestedOffset = currentOffset + Math.round(deltaFrames) * frame;
+    const nextOffset = Math.round(Math.min(maxOffset, Math.max(minOffset, requestedOffset)) * fps) / fps;
+    const appliedFrames = Math.round((nextOffset - currentOffset) * fps);
+    if (appliedFrames === 0) return;
+    const shift = appliedFrames * frame;
+    set({
+      layers: mapLayer(get().layers, id, (current) => {
+        const tracks = { ...current.tracks };
+        for (const prop of PROPS) {
+          tracks[prop] = normalizeTrackFrameRate(
+            current.tracks[prop].map((key) => ({ ...key, t: key.t + shift })),
+            duration,
+            fps,
+          );
+        }
+        return {
+          ...current,
+          timelineOffset: Math.abs(nextOffset) < 1e-6 ? undefined : nextOffset,
+          tracks,
+        };
+      }),
+    });
+  },
   setLayerClipRange: (id, requestedIn, requestedOut) => {
     const state = get();
     const { duration, fps } = state;
@@ -552,12 +604,17 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     if (!layer) return;
     const frame = 1 / fps;
     const latestIn = Math.max(0, Math.floor(duration * fps + 1e-6) - 1) / fps;
-    const inPoint = Math.min(latestIn, Math.max(0, snapTime(requestedIn, duration, fps)));
-    const snappedOut =
-      requestedOut >= duration ? duration : snapTime(requestedOut, duration, fps);
+    const offset = layer.timelineOffset ?? 0;
+    const inPoint = Math.min(latestIn, Math.max(0, snapTime(requestedIn - offset, duration, fps)));
+    const snappedOut = requestedOut - offset >= duration
+      ? duration
+      : snapTime(requestedOut - offset, duration, fps);
     const outPoint = Math.min(duration, Math.max(inPoint + frame, snappedOut));
     const current = layerClipRange(layer, duration, fps);
-    if (Math.abs(current.inPoint - inPoint) < 1e-6 && Math.abs(current.outPoint - outPoint) < 1e-6) return;
+    if (
+      Math.abs(current.inPoint - (offset + inPoint)) < 1e-6 &&
+      Math.abs(current.outPoint - (offset + outPoint)) < 1e-6
+    ) return;
     set({
       layers: mapLayer(get().layers, id, (layer) => ({
         ...layer,

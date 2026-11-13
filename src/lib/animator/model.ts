@@ -86,6 +86,8 @@ export type Layer = {
   /** Composition-time trim range; omitted ends follow the project boundaries. */
   clipIn?: number;
   clipOut?: number;
+  /** Timeline position offset for the whole clip and its keyframes. */
+  timelineOffset?: number;
   scaleLinked?: boolean;
   fill: string;
   stroke: string;
@@ -213,13 +215,14 @@ export function layerClipRange(
   const frame = 1 / fps;
   const lastStartFrame = Math.max(0, Math.floor(duration * fps + 1e-6) - 1);
   const maxIn = lastStartFrame / fps;
-  const inPoint = Math.min(maxIn, snapTime(layer.clipIn ?? 0, duration, fps));
+  const offset = Number.isFinite(layer.timelineOffset) ? layer.timelineOffset! : 0;
+  const localIn = Math.min(maxIn, snapTime(layer.clipIn ?? 0, duration, fps));
   const requestedOut = layer.clipOut ?? duration;
-  const outPoint =
+  const localOut =
     requestedOut >= duration
       ? duration
-      : Math.min(duration, Math.max(inPoint + frame, snapTime(requestedOut, duration, fps)));
-  return { inPoint, outPoint };
+      : Math.min(duration, Math.max(localIn + frame, snapTime(requestedOut, duration, fps)));
+  return { inPoint: offset + localIn, outPoint: offset + localOut };
 }
 
 export function layerIsActive(layer: Layer, time: number, duration: number, fps = DEFAULT_FPS): boolean {
@@ -795,15 +798,13 @@ export function svgTransform(layer: Layer, t: number, fps = DEFAULT_FPS): string
 function clipAnimationCss(layer: Layer, duration: number, fps: number): string {
   const { inPoint, outPoint } = layerClipRange(layer, duration, fps);
   if (inPoint <= 0 && outPoint >= duration) return "";
-  const inPercent = duration <= 0 ? 0 : (inPoint / duration) * 100;
-  const outPercent = duration <= 0 ? 100 : (outPoint / duration) * 100;
-  const initialVisibility = inPoint <= 0 ? "visible" : "hidden";
-  return `@keyframes ${layer.id}_clip {\n` +
-    `  0% { visibility: ${initialVisibility}; }\n` +
-    `  ${inPercent.toFixed(4)}% { visibility: visible; }\n` +
-    `  ${outPercent.toFixed(4)}% { visibility: hidden; }\n` +
-    `  100% { visibility: hidden; }\n` +
-    `}\n`;
+  const inPercent = Math.min(100, Math.max(0, (inPoint / duration) * 100));
+  const outPercent = Math.min(100, Math.max(0, (outPoint / duration) * 100));
+  const frames = [`0% { visibility: ${inPoint <= 0 ? "visible" : "hidden"}; }`];
+  if (inPoint > 0 && inPoint < duration) frames.push(`${inPercent.toFixed(4)}% { visibility: visible; }`);
+  if (outPoint > 0 && outPoint < duration) frames.push(`${outPercent.toFixed(4)}% { visibility: hidden; }`);
+  frames.push(`100% { visibility: ${outPoint >= duration ? "visible" : "hidden"}; }`);
+  return `@keyframes ${layer.id}_clip {\n${frames.map((frame) => `  ${frame}\n`).join("")}}\n`;
 }
 
 export function buildExport(

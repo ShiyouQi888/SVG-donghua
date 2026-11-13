@@ -828,6 +828,7 @@ export function Timeline() {
             return (
               <div key={layer.id}>
                 <div
+                  data-layer-row-id={layer.id}
                   className={`timeline-layer-row flex h-8 border-b border-border ${layer.id === selectedId ? "is-active" : ""}`}
                 >
                   <div
