@@ -1,3 +1,5 @@
+import type { PersistedDoc } from "./model";
+
 export type ProjectAssetRecord = {
   id: string;
   name: string;
@@ -9,9 +11,12 @@ export type ProjectAssetRecord = {
 };
 
 const DATABASE_NAME = "kairo-project-assets";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STORE_NAME = "assets";
+const DOCUMENT_STORE_NAME = "documents";
+const DOCUMENT_RECORD_ID = "current";
 export const PROJECT_ASSET_DRAG_TYPE = "application/x-kairo-project-asset";
+export const PROJECT_ASSETS_CHANGED_EVENT = "kairo-project-assets-changed";
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 
@@ -23,6 +28,9 @@ function openDatabase(): Promise<IDBDatabase> {
       const database = request.result;
       if (!database.objectStoreNames.contains(STORE_NAME)) {
         database.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+      if (!database.objectStoreNames.contains(DOCUMENT_STORE_NAME)) {
+        database.createObjectStore(DOCUMENT_STORE_NAME, { keyPath: "id" });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -120,6 +128,64 @@ export async function saveProjectAsset(file: File): Promise<ProjectAssetRecord> 
 
 export function listProjectAssets(): Promise<ProjectAssetRecord[]> {
   return requestResult("readonly", (store) => store.getAll());
+}
+
+export async function replaceProjectAssets(assets: ProjectAssetRecord[]): Promise<void> {
+  const database = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    const store = transaction.objectStore(STORE_NAME);
+    store.clear();
+    for (const asset of assets) store.put(asset);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("写入项目素材失败"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("项目素材导入已取消"));
+  });
+}
+
+type DocumentSnapshotRecord = {
+  id: typeof DOCUMENT_RECORD_ID;
+  current: PersistedDoc;
+  backup?: PersistedDoc;
+  savedAt: number;
+};
+
+export async function saveDocumentSnapshot(document: PersistedDoc): Promise<void> {
+  const database = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(DOCUMENT_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(DOCUMENT_STORE_NAME);
+    const request = store.get(DOCUMENT_RECORD_ID);
+    request.onsuccess = () => {
+      const previous = request.result as DocumentSnapshotRecord | undefined;
+      store.put({
+        id: DOCUMENT_RECORD_ID,
+        current: document,
+        backup: previous?.current ?? previous?.backup,
+        savedAt: Date.now(),
+      } satisfies DocumentSnapshotRecord);
+    };
+    request.onerror = () => transaction.abort();
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("保存恢复副本失败"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("保存恢复副本失败"));
+  });
+}
+
+export async function loadDocumentSnapshot(): Promise<{
+  current?: PersistedDoc;
+  backup?: PersistedDoc;
+} | null> {
+  const database = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(DOCUMENT_STORE_NAME, "readonly");
+    const request = transaction.objectStore(DOCUMENT_STORE_NAME).get(DOCUMENT_RECORD_ID);
+    request.onsuccess = () => {
+      const record = request.result as DocumentSnapshotRecord | undefined;
+      resolve(record ? { current: record.current, backup: record.backup } : null);
+    };
+    request.onerror = () => reject(request.error ?? new Error("读取恢复副本失败"));
+  });
 }
 
 export function getProjectAsset(id: string): Promise<ProjectAssetRecord | undefined> {

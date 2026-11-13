@@ -8,9 +8,11 @@ export type LayerTemplate = {
   name: string;
   category: TemplateCategory;
   description: string;
-  kind: Exclude<ShapeKind, "image" | "path">;
+  kind: Exclude<ShapeKind, "image" | "path" | "group">;
   fill: string;
+  fillEnabled?: boolean;
   stroke: string;
+  strokeEnabled?: boolean;
   strokeWidth: number;
   cornerRadius: number;
   widthRatio: number;
@@ -262,8 +264,20 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "入场",
     description: "透明度渐显，并从下方滑入",
     tracks: [
-      { prop: "opacity", frames: [{ at: 0, value: 0 }, { at: 0.2, value: 1 }] },
-      { prop: "y", frames: [{ at: 0, value: 84 }, { at: 0.2, value: 0 }] },
+      {
+        prop: "opacity",
+        frames: [
+          { at: 0, value: 0 },
+          { at: 0.2, value: 1 },
+        ],
+      },
+      {
+        prop: "y",
+        frames: [
+          { at: 0, value: 84 },
+          { at: 0.2, value: 0 },
+        ],
+      },
     ],
   },
   {
@@ -271,7 +285,15 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     name: "柔和淡入",
     category: "入场",
     description: "透明度从 0 平滑进入",
-    tracks: [{ prop: "opacity", frames: [{ at: 0, value: 0 }, { at: 0.24, value: 1 }] }],
+    tracks: [
+      {
+        prop: "opacity",
+        frames: [
+          { at: 0, value: 0 },
+          { at: 0.24, value: 1 },
+        ],
+      },
+    ],
   },
   {
     id: "slide-left",
@@ -279,8 +301,20 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "入场",
     description: "从右向左进入当前位置",
     tracks: [
-      { prop: "opacity", frames: [{ at: 0, value: 0 }, { at: 0.18, value: 1 }] },
-      { prop: "x", frames: [{ at: 0, value: 110 }, { at: 0.18, value: 0 }] },
+      {
+        prop: "opacity",
+        frames: [
+          { at: 0, value: 0 },
+          { at: 0.18, value: 1 },
+        ],
+      },
+      {
+        prop: "x",
+        frames: [
+          { at: 0, value: 110 },
+          { at: 0.18, value: 0 },
+        ],
+      },
     ],
   },
   {
@@ -289,9 +323,29 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "入场",
     description: "缩小进入并带轻微回弹",
     tracks: [
-      { prop: "opacity", frames: [{ at: 0, value: 0 }, { at: 0.12, value: 1 }] },
-      { prop: "scale", frames: [{ at: 0, value: 0.7 }, { at: 0.12, value: 1.08 }, { at: 0.24, value: 1 }] },
-      { prop: "scaleY", frames: [{ at: 0, value: 0.7 }, { at: 0.12, value: 1.08 }, { at: 0.24, value: 1 }] },
+      {
+        prop: "opacity",
+        frames: [
+          { at: 0, value: 0 },
+          { at: 0.12, value: 1 },
+        ],
+      },
+      {
+        prop: "scale",
+        frames: [
+          { at: 0, value: 0.7 },
+          { at: 0.12, value: 1.08 },
+          { at: 0.24, value: 1 },
+        ],
+      },
+      {
+        prop: "scaleY",
+        frames: [
+          { at: 0, value: 0.7 },
+          { at: 0.12, value: 1.08 },
+          { at: 0.24, value: 1 },
+        ],
+      },
     ],
   },
   {
@@ -300,8 +354,20 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "入场",
     description: "带角度淡入并回到正向",
     tracks: [
-      { prop: "opacity", frames: [{ at: 0, value: 0 }, { at: 0.2, value: 1 }] },
-      { prop: "rotate", frames: [{ at: 0, value: -16 }, { at: 0.2, value: 0 }] },
+      {
+        prop: "opacity",
+        frames: [
+          { at: 0, value: 0 },
+          { at: 0.2, value: 1 },
+        ],
+      },
+      {
+        prop: "rotate",
+        frames: [
+          { at: 0, value: -16 },
+          { at: 0.2, value: 0 },
+        ],
+      },
     ],
   },
   {
@@ -310,8 +376,22 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "循环",
     description: "全片轻微放大再回落，配合循环播放",
     tracks: [
-      { prop: "scale", frames: [{ at: 0, value: 1 }, { at: 0.5, value: 1.08 }, { at: 1, value: 1 }] },
-      { prop: "scaleY", frames: [{ at: 0, value: 1 }, { at: 0.5, value: 1.08 }, { at: 1, value: 1 }] },
+      {
+        prop: "scale",
+        frames: [
+          { at: 0, value: 1 },
+          { at: 0.5, value: 1.08 },
+          { at: 1, value: 1 },
+        ],
+      },
+      {
+        prop: "scaleY",
+        frames: [
+          { at: 0, value: 1 },
+          { at: 0.5, value: 1.08 },
+          { at: 1, value: 1 },
+        ],
+      },
     ],
   },
   {
@@ -320,7 +400,16 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "强调",
     description: "短促摆动后回正",
     tracks: [
-      { prop: "rotate", frames: [{ at: 0, value: 0 }, { at: 0.18, value: -7 }, { at: 0.36, value: 7 }, { at: 0.56, value: -3 }, { at: 0.72, value: 0 }] },
+      {
+        prop: "rotate",
+        frames: [
+          { at: 0, value: 0 },
+          { at: 0.18, value: -7 },
+          { at: 0.36, value: 7 },
+          { at: 0.56, value: -3 },
+          { at: 0.72, value: 0 },
+        ],
+      },
     ],
   },
   {
@@ -329,7 +418,15 @@ export const MOTION_TEMPLATES: MotionTemplate[] = [
     category: "颜色",
     description: "蓝紫金三色流转并回到品牌蓝",
     tracks: [
-      { prop: "fill", frames: [{ at: 0, value: "#4c9fff" }, { at: 0.34, value: "#9b79ff" }, { at: 0.67, value: "#ffc94a" }, { at: 1, value: "#4c9fff" }] },
+      {
+        prop: "fill",
+        frames: [
+          { at: 0, value: "#4c9fff" },
+          { at: 0.34, value: "#9b79ff" },
+          { at: 0.67, value: "#ffc94a" },
+          { at: 1, value: "#4c9fff" },
+        ],
+      },
     ],
   },
 ];

@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  Check,
   Circle,
+  FolderInput,
   MousePointer2,
   PenTool,
   Redo2,
+  Save,
   Settings2,
   Square,
   Star,
@@ -12,7 +15,14 @@ import {
   Upload,
 } from "lucide-react";
 import { DEFAULT_FPS, FRAME_RATE_OPTIONS, snapTime, type Tool } from "@/lib/animator/model";
-import { getProjectAsset, projectAssetImageSource } from "@/lib/animator/project-assets";
+import {
+  getProjectAsset,
+  listProjectAssets,
+  projectAssetImageSource,
+  PROJECT_ASSETS_CHANGED_EVENT,
+  replaceProjectAssets,
+} from "@/lib/animator/project-assets";
+import { createKairoProjectFile, parseKairoProjectFile } from "@/lib/animator/project-file";
 import { loadSnapshot, saveSnapshot, useDoc } from "@/lib/animator/store";
 import { Stage } from "./Stage";
 import { Timeline } from "./Timeline";
@@ -41,6 +51,8 @@ const CANVAS_PRESETS = [
 
 export function Editor() {
   const [exportOpen, setExportOpen] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "error">("saved");
+  const projectInputRef = useRef<HTMLInputElement>(null);
   const tool = useDoc((s) => s.tool);
   const setTool = useDoc((s) => s.setTool);
   const resetDemo = useDoc((s) => s.resetDemo);
@@ -61,6 +73,40 @@ export function Editor() {
   const setExportSize = useDoc((s) => s.setExportSize);
   const setDuration = useDoc((s) => s.setDuration);
   const setFps = useDoc((s) => s.setFps);
+
+  const saveProjectFile = async () => {
+    setSaveStatus("saving");
+    try {
+      const snapshot = useDoc.getState().snapshot();
+      const persisted = await saveSnapshot(snapshot);
+      const project = await createKairoProjectFile(snapshot, await listProjectAssets());
+      const blob = new Blob([JSON.stringify(project)], { type: "application/vnd.kairo.project+json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `金帧项目-${new Date().toISOString().slice(0, 10)}.kairo`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setSaveStatus(persisted ? "saved" : "error");
+    } catch {
+      setSaveStatus("error");
+      window.alert("项目文件保存失败，请检查浏览器的存储空间后重试。");
+    }
+  };
+
+  const openProjectFile = async (file: File) => {
+    try {
+      const project = await parseKairoProjectFile(file);
+      if (!window.confirm(`打开“${file.name}”并替换当前动画与项目素材吗？\n建议先保存当前项目。`)) return;
+      await replaceProjectAssets(project.assets);
+      window.dispatchEvent(new Event(PROJECT_ASSETS_CHANGED_EVENT));
+      replace(project.document);
+      clearHistory();
+      setSaveStatus((await saveSnapshot(project.document)) ? "saved" : "error");
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "项目文件打开失败");
+    }
+  };
 
   const placeProjectAsset = async (assetId: string, position?: { x: number; y: number }) => {
     try {
@@ -100,11 +146,15 @@ export function Editor() {
   };
 
   useEffect(() => {
-    const saved = loadSnapshot();
-    if (saved) {
+    let active = true;
+    void loadSnapshot().then((saved) => {
+      if (!active || !saved) return;
       replace(saved);
       clearHistory();
-    }
+    });
+    return () => {
+      active = false;
+    };
   }, [clearHistory, replace]);
 
   useEffect(() => {
@@ -123,13 +173,16 @@ export function Editor() {
         state.snapEnabled === previous.snapEnabled &&
         state.motionBlur === previous.motionBlur &&
         state.motionBlurStrength === previous.motionBlurStrength &&
+        state.markers === previous.markers &&
+        state.workArea === previous.workArea &&
         state.layers === previous.layers
       ) {
         return;
       }
       window.clearTimeout(timer);
+      setSaveStatus("saving");
       timer = window.setTimeout(() => {
-        saveSnapshot({
+        const snapshot = {
           duration: state.duration,
           fps: state.fps,
           loop: state.loop,
@@ -142,8 +195,11 @@ export function Editor() {
           snapEnabled: state.snapEnabled,
           motionBlur: state.motionBlur,
           motionBlurStrength: state.motionBlurStrength,
+          markers: state.markers,
+          workArea: state.workArea,
           layers: state.layers,
-        });
+        };
+        void saveSnapshot(snapshot).then((saved) => setSaveStatus(saved ? "saved" : "error"));
       }, 250);
     });
     return () => {
@@ -177,10 +233,12 @@ export function Editor() {
           frameAccumulator -= framesToAdvance / state.fps;
           state = useDoc.getState();
           const next = state.time + framesToAdvance / state.fps;
-          if (next >= state.duration) {
-            if (state.loop) state.setTime(0);
+          const playbackStart = state.workArea?.start ?? 0;
+          const playbackEnd = state.workArea?.end ?? state.duration;
+          if (next >= playbackEnd) {
+            if (state.loop) state.setTime(playbackStart);
             else {
-              state.setTime(state.duration);
+              state.setTime(playbackEnd);
               state.togglePlay();
             }
           } else {
@@ -226,7 +284,8 @@ export function Editor() {
       } else if (event.key === "f" || event.key === "F") {
         state.easyEase();
       } else if (event.key === "Delete" || event.key === "Backspace") {
-        if (state.selectedKey) state.deleteSelectedKey();
+        if (state.selectedPathKey) state.deletePathKey(state.selectedPathKey.layerId, state.selectedPathKey.id);
+        else if (state.selectedKey) state.deleteSelectedKey();
         else if (state.selectedId) state.deleteLayer(state.selectedId);
       } else if (event.key === "v") setTool("select");
       else if (event.key === "ArrowLeft") {
@@ -275,6 +334,47 @@ export function Editor() {
           })}
         </div>
         <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-1">
+          <button
+            type="button"
+            onClick={() => projectInputRef.current?.click()}
+            title="打开 .kairo 项目文件"
+            aria-label="打开项目文件"
+            className="flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs text-muted hover:border-primary/40 hover:bg-surface-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
+          >
+            <FolderInput className="size-3.5" />
+            <span className="hidden xl:inline">打开项目</span>
+          </button>
+          <input
+            ref={projectInputRef}
+            type="file"
+            accept=".kairo,application/vnd.kairo.project+json,application/json"
+            aria-label="选择金帧项目文件"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.currentTarget.value = "";
+              if (file) void openProjectFile(file);
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => void saveProjectFile()}
+            title={saveStatus === "error" ? "本地保存失败，点击导出项目文件" : "保存完整 .kairo 项目文件"}
+            aria-label="保存项目文件"
+            className="flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs text-muted hover:border-primary/40 hover:bg-surface-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
+          >
+            <Save className="size-3.5" />
+            <span className="hidden xl:inline">保存项目</span>
+          </button>
+          <span
+            role="status"
+            aria-live="polite"
+            title={saveStatus === "error" ? "本地自动保存失败" : saveStatus === "saving" ? "正在自动保存" : "自动保存完成"}
+            className={`hidden items-center gap-1 px-1 text-[10px] 2xl:flex ${saveStatus === "error" ? "text-danger" : "text-muted"}`}
+          >
+            {saveStatus === "saved" ? <Check className="size-3 text-primary" /> : null}
+            {saveStatus === "saving" ? "保存中" : saveStatus === "error" ? "保存失败" : "已保存"}
+          </span>
           <button
             type="button"
             aria-label="撤销 Ctrl+Z"

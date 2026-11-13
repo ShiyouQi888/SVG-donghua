@@ -35,7 +35,12 @@ function readSavedTemplates(): SavedTemplate[] {
   }
 }
 
-function applyMotionPreset(layerId: string, template: MotionTemplate, duration: number, fps: number) {
+function applyMotionPreset(
+  layerId: string,
+  template: MotionTemplate,
+  duration: number,
+  fps: number,
+) {
   const state = useDoc.getState();
   const layer = state.layers.find((item) => item.id === layerId);
   if (!layer) return;
@@ -82,7 +87,9 @@ function applyLayerTemplate(template: LayerTemplate) {
     if (!id) return;
     useDoc.getState().setPaint(id, {
       fill: template.fill,
+      fillEnabled: template.fillEnabled ?? true,
       stroke: template.stroke,
+      strokeEnabled: template.strokeEnabled ?? true,
       strokeWidth: template.strokeWidth,
       cornerRadius: template.cornerRadius,
       ...(template.text === undefined ? {} : { text: template.text }),
@@ -104,7 +111,9 @@ function applyLayerTemplate(template: LayerTemplate) {
 function applyLayerStyle(template: LayerTemplate, layer: Layer) {
   const patch = {
     fill: template.fill,
+    fillEnabled: template.fillEnabled ?? true,
     stroke: template.stroke,
+    strokeEnabled: template.strokeEnabled ?? true,
     strokeWidth: template.strokeWidth,
     ...(layer.kind === "rect" ? { cornerRadius: template.cornerRadius } : {}),
     ...(layer.kind === "text"
@@ -125,14 +134,25 @@ function applyLayerStyle(template: LayerTemplate, layer: Layer) {
 }
 
 function TemplateSwatch({ template }: { template: LayerTemplate }) {
-  const shape = template.kind === "ellipse" ? "rounded-[50%]" : template.kind === "star" ? "rotate-45 rounded-sm" : "rounded-md";
+  const shape =
+    template.kind === "ellipse"
+      ? "rounded-[50%]"
+      : template.kind === "star"
+        ? "rotate-45 rounded-sm"
+        : "rounded-md";
   return (
     <span className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-bg">
       <span
         className={`block h-5 w-6 ${shape}`}
         style={{
-          backgroundColor: template.fill === "none" ? "transparent" : template.fill,
-          border: `${Math.max(1, Math.min(3, template.strokeWidth))}px solid ${template.stroke}`,
+          backgroundColor:
+            template.fillEnabled === false || template.fill === "none"
+              ? "transparent"
+              : template.fill,
+          border:
+            template.strokeEnabled === false
+              ? "none"
+              : `${Math.max(1, Math.min(3, template.strokeWidth))}px solid ${template.stroke}`,
           borderRadius: template.kind === "rect" ? Math.min(12, template.cornerRadius) : undefined,
         }}
       />
@@ -159,7 +179,9 @@ function LayerTemplateCard({
         <TemplateSwatch template={template} />
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-[11px] font-medium text-fg">{template.name}</h3>
-          <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted">{template.description}</p>
+          <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted">
+            {template.description}
+          </p>
         </div>
         {onDelete && (
           <button
@@ -182,7 +204,7 @@ function LayerTemplateCard({
           <Plus className="size-3" />
           添加图层
         </button>
-        {onApply && selectedLayer?.kind !== "image" && (
+        {onApply && selectedLayer?.kind !== "image" && selectedLayer?.kind !== "group" && (
           <button
             type="button"
             onClick={onApply}
@@ -212,7 +234,9 @@ function MotionTemplateCard({
       </span>
       <div className="min-w-0 flex-1">
         <h3 className="truncate text-[11px] font-medium text-fg">{template.name}</h3>
-        <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted">{template.description}</p>
+        <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted">
+          {template.description}
+        </p>
       </div>
       <button
         type="button"
@@ -230,7 +254,9 @@ function MotionTemplateCard({
 
 export function TemplatePanel() {
   const selectedId = useDoc((state) => state.selectedId);
-  const selectedLayer = useDoc((state) => state.layers.find((layer) => layer.id === state.selectedId));
+  const selectedLayer = useDoc((state) =>
+    state.layers.find((layer) => layer.id === state.selectedId),
+  );
   const duration = useDoc((state) => state.duration);
   const fps = useDoc((state) => state.fps);
   const projectWidth = useDoc((state) => state.projectWidth);
@@ -284,16 +310,22 @@ export function TemplatePanel() {
   }, [category, normalizedSearch]);
 
   const saveSelectedAsTemplate = () => {
-    if (!selectedLayer) return;
+    if (!selectedLayer || selectedLayer.kind === "group") return;
     const name = templateName.trim() || selectedLayer.name;
     const next: SavedTemplate = {
       id: `saved-${nid("tpl")}`,
       name,
-      category: selectedLayer.kind === "text" ? "文字" : selectedLayer.kind === "rect" ? "版式" : "图形",
+      category:
+        selectedLayer.kind === "text" ? "文字" : selectedLayer.kind === "rect" ? "版式" : "图形",
       description: `来自图层「${selectedLayer.name}」的可复用外观`,
-      kind: selectedLayer.kind === "image" || selectedLayer.kind === "path" ? "rect" : selectedLayer.kind,
+      kind:
+        selectedLayer.kind === "image" || selectedLayer.kind === "path"
+          ? "rect"
+          : selectedLayer.kind,
       fill: selectedLayer.fill,
+      fillEnabled: selectedLayer.fillEnabled,
       stroke: selectedLayer.stroke,
+      strokeEnabled: selectedLayer.strokeEnabled,
       strokeWidth: selectedLayer.strokeWidth,
       cornerRadius: selectedLayer.cornerRadius ?? 8,
       widthRatio: Math.max(0.05, selectedLayer.w / projectWidth),
@@ -326,7 +358,7 @@ export function TemplatePanel() {
             创建标题、字幕、形状与版式，或将动效应用到当前选中图层。也可以保存当前外观供后续复用。
           </p>
         </div>
-        {selectedLayer && (
+        {selectedLayer && selectedLayer.kind !== "group" && (
           <div className="mt-2 border-t border-border/70 pt-2">
             {saving ? (
               <div className="flex gap-1.5">
@@ -392,7 +424,9 @@ export function TemplatePanel() {
       <section className="space-y-2" aria-label="图层模板">
         {category !== "动效" && visibleLayers.length > 0 && (
           <>
-            <h3 className="text-[10px] font-medium uppercase tracking-wide text-muted">可复用图层模板</h3>
+            <h3 className="text-[10px] font-medium uppercase tracking-wide text-muted">
+              可复用图层模板
+            </h3>
             {visibleLayers.map((template) => (
               <LayerTemplateCard
                 key={template.id}

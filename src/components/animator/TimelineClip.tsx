@@ -32,6 +32,7 @@ export function TimelineClip({
   fps,
   px,
   selected,
+  locked = Boolean(layer.locked),
   timeDisplayMode,
 }: {
   layer: Layer;
@@ -39,6 +40,7 @@ export function TimelineClip({
   fps: number;
   px: number;
   selected: boolean;
+  locked?: boolean;
   timeDisplayMode: TimeDisplayMode;
 }) {
   const trimDrag = useRef<TrimDrag | null>(null);
@@ -62,6 +64,7 @@ export function TimelineClip({
   function beginTrim(event: ReactPointerEvent<HTMLButtonElement>, edge: TrimEdge) {
     event.preventDefault();
     event.stopPropagation();
+    if (locked) return;
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     selectLayer(layer.id);
@@ -93,6 +96,10 @@ export function TimelineClip({
   }
 
   function beginMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (locked) {
+      event.stopPropagation();
+      return;
+    }
     if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
     event.preventDefault();
     event.stopPropagation();
@@ -170,6 +177,7 @@ export function TimelineClip({
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (locked) return;
     if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "ArrowLeft") moveLayerClip(layer.id, -1);
     else if (event.key === "ArrowRight") moveLayerClip(layer.id, 1);

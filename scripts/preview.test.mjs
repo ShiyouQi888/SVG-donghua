@@ -64,15 +64,15 @@ const tcpRow = (sl, local, state, inode) =>
 const PROC_NET_TCP = [
   "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode",
   tcpRow(0, "0100007F:1F91", "0A", 5551),
-  tcpRow(1, "0100007F:1F90", "0A", 5552),
+  tcpRow(1, "0100007F:0C1C", "0A", 5552),
   tcpRow(2, "0100007F:1F91", "01", 5553),
   "",
 ].join("\n");
 
 test("parseListenerInodes picks LISTEN sockets on the wanted port only", () => {
-  // 0x1F91 = 8081 (LISTEN), 0x1F90 = 8080, and the third row is ESTABLISHED.
+  // 0x1F91 = 8081 (LISTEN), 0x0C1C = 3100, and the third row is ESTABLISHED.
   assert.deepEqual(parseListenerInodes(PROC_NET_TCP, 8081), ["5551"]);
-  assert.deepEqual(parseListenerInodes(PROC_NET_TCP, 8080), ["5552"]);
+  assert.deepEqual(parseListenerInodes(PROC_NET_TCP, 3100), ["5552"]);
   assert.deepEqual(parseListenerInodes(PROC_NET_TCP, 9999), []);
   assert.deepEqual(parseListenerInodes("", 8081), []);
   assert.deepEqual(parseListenerInodes(undefined, 8081), []);
@@ -103,7 +103,7 @@ test("looksLikePreviewProcess spares the sibling scripts and re-used pids", () =
   const thumbnail = cmdline(
     "node",
     "/opt/app-template/scripts/preview-thumbnail.mjs",
-    "http://127.0.0.1:8080/",
+    "http://127.0.0.1:3100/",
     "/tmp/preview-thumbnail.png",
   );
   assert.equal(looksLikePreviewProcess(thumbnail), false);

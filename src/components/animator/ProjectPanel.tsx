@@ -3,6 +3,7 @@ import { FileImage, FolderOpen, Plus, Search, Trash2, Upload } from "lucide-reac
 import {
   deleteProjectAsset,
   listProjectAssets,
+  PROJECT_ASSETS_CHANGED_EVENT,
   PROJECT_ASSET_DRAG_TYPE,
   saveProjectAsset,
   type ProjectAssetRecord,
@@ -28,18 +29,28 @@ export function ProjectPanel({ onPlaceAsset }: { onPlaceAsset: (assetId: string)
 
   useEffect(() => {
     let active = true;
-    void listProjectAssets()
-      .then((saved) => {
-        if (active) setAssets(saved.slice().reverse().map(withPreview));
-      })
-      .catch(() => {
-        if (active) setError("无法读取项目素材库");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    const refresh = () => {
+      setLoading(true);
+      void listProjectAssets()
+        .then((saved) => {
+          if (!active) return;
+          for (const url of previewUrls.current) URL.revokeObjectURL(url);
+          previewUrls.current.clear();
+          setAssets(saved.slice().reverse().map(withPreview));
+          setError("");
+        })
+        .catch(() => {
+          if (active) setError("无法读取项目素材库");
+        })
+        .finally(() => {
+          if (active) setLoading(false);
+        });
+    };
+    refresh();
+    window.addEventListener(PROJECT_ASSETS_CHANGED_EVENT, refresh);
     return () => {
       active = false;
+      window.removeEventListener(PROJECT_ASSETS_CHANGED_EVENT, refresh);
       for (const url of previewUrls.current) URL.revokeObjectURL(url);
       previewUrls.current.clear();
     };

@@ -1,11 +1,15 @@
 import { create } from "zustand";
+import { loadDocumentSnapshot, saveDocumentSnapshot } from "./project-assets";
 import {
   type Interp,
   type Keyframe,
   type Layer,
   type MotionTangent,
+  type PathKeyframe,
+  type AffineMatrix,
   type PersistedDoc,
   type PropKey,
+  type TimelineMarker,
   type FrameRate,
   type ShapeKind,
   type Tool,
@@ -13,8 +17,15 @@ import {
   DEFAULT_FPS,
   PROPS,
   colorToNumber,
+  IDENTITY_MATRIX,
+  invertMatrix,
+  layerLocalMatrix,
+  layerIsLocked,
+  layerWorldMatrix,
+  multiplyMatrices,
   defaultRest,
   DEFAULT_BEZIER,
+  DEFAULT_PATH_GROWTH,
   DEMO_DURATION,
   DEMO_HEIGHT,
   DEMO_WIDTH,
@@ -28,6 +39,7 @@ import {
   nid,
   normalizeFrameRate,
   numberToColor,
+  pathAt,
   sample,
   snapTime,
 } from "./model";
@@ -36,6 +48,7 @@ const STORAGE_KEY = "kairo-doc-v1";
 
 export type SelectedKey = { layerId: string; prop: PropKey; id: string };
 export type KeyframeMove = SelectedKey & { t: number };
+export type SelectedPathKey = { layerId: string; id: string };
 export type CopiedKeyframe = {
   layerId: string;
   prop: PropKey;
@@ -62,9 +75,13 @@ type DocState = {
   snapEnabled: boolean;
   motionBlur: boolean;
   motionBlurStrength: number;
+  markers: TimelineMarker[];
+  workArea: { start: number; end: number } | null;
   selectedId: string | null;
+  selectedLayerIds: string[];
   selectedKey: SelectedKey | null;
   selectedKeys: SelectedKey[];
+  selectedPathKey: SelectedPathKey | null;
   tool: Tool;
   autoKey: boolean;
   expanded: Record<string, boolean>;
@@ -90,20 +107,42 @@ type Actions = {
   setPx: (n: number) => void;
   setTool: (tool: Tool) => void;
   toggleAutoKey: () => void;
-  selectLayer: (id: string | null) => void;
+  selectLayer: (id: string | null, mode?: "replace" | "toggle" | "range") => void;
+  createGroup: (layerIds: string[]) => void;
+  ungroupLayer: (id: string) => void;
+  setLayerParent: (id: string, parentId: string | null) => void;
   toggleExpanded: (id: string) => void;
   addShape: (
-    kind: Exclude<ShapeKind, "path">,
+    kind: Exclude<ShapeKind, "path" | "group">,
     x: number,
     y: number,
     bounds?: { x: number; y: number; w: number; h: number },
   ) => void;
   addPath: (points: VectorPathPoint[], closed?: boolean) => void;
   setPathPoint: (id: string, index: number, point: VectorPathPoint) => void;
+  addPathKey: (id: string) => void;
+  selectPathKey: (key: SelectedPathKey | null) => void;
+  movePathKey: (id: string, keyId: string, time: number) => void;
+  patchPathKey: (
+    id: string,
+    keyId: string,
+    patch: Partial<Pick<PathKeyframe, "interp" | "bezier">>,
+  ) => void;
+  deletePathKey: (id: string, keyId: string) => void;
   moveLayer: (id: string, direction: "forward" | "backward" | "front" | "back") => void;
   moveLayerToRow: (id: string, targetId: string, placement: "before" | "after") => void;
   moveLayerClip: (id: string, deltaFrames: number) => void;
+  splitLayerAtTime: (id: string, time: number) => string | null;
+  rippleDeleteLayer: (id: string) => void;
   setLayerClipRange: (id: string, inPoint: number, outPoint: number) => void;
+  toggleLayerLocked: (id: string) => void;
+  toggleLayerSolo: (id: string) => void;
+  addMarker: (time: number) => void;
+  moveMarker: (id: string, time: number) => void;
+  removeMarker: (id: string) => void;
+  renameMarker: (id: string, name: string) => void;
+  setWorkAreaEdge: (edge: "start" | "end", time: number) => void;
+  clearWorkArea: () => void;
   setMotionHandle: (id: string, keyId: string, side: "in" | "out", offset: MotionTangent) => void;
   deleteLayer: (id: string) => void;
   toggleVisible: (id: string) => void;
@@ -114,13 +153,16 @@ type Actions = {
       Pick<
         Layer,
         | "fill"
+        | "fillEnabled"
         | "stroke"
+        | "strokeEnabled"
         | "strokeWidth"
         | "text"
         | "fontSize"
         | "fontWeight"
         | "fontFamily"
         | "cornerRadius"
+        | "pathGrowth"
         | "imageSrc"
         | "x"
         | "y"
@@ -158,9 +200,7 @@ type Actions = {
     id: string,
     prop: PropKey,
     keyId: string,
-    patch: Partial<
-      Pick<Keyframe, "v" | "t" | "interp" | "bezier" | "motionIn" | "motionOut">
-    >,
+    patch: Partial<Pick<Keyframe, "v" | "t" | "interp" | "bezier" | "motionIn" | "motionOut">>,
   ) => void;
   deleteSelectedKey: () => void;
   easyEase: () => void;
@@ -183,8 +223,11 @@ type HistoryFrame = Pick<
   | "snapEnabled"
   | "motionBlur"
   | "motionBlurStrength"
+  | "markers"
+  | "workArea"
   | "time"
   | "selectedId"
+  | "selectedLayerIds"
   | "selectedKey"
   | "selectedKeys"
   | "expanded"
@@ -211,8 +254,11 @@ function historyFrame(state: DocState): HistoryFrame {
     snapEnabled: state.snapEnabled,
     motionBlur: state.motionBlur,
     motionBlurStrength: state.motionBlurStrength,
+    markers: state.markers,
+    workArea: state.workArea,
     time: state.time,
     selectedId: state.selectedId,
+    selectedLayerIds: state.selectedLayerIds,
     selectedKey: state.selectedKey,
     selectedKeys: state.selectedKeys,
     expanded: state.expanded,
@@ -233,6 +279,8 @@ function hasDocumentChange(next: DocState, previous: DocState): boolean {
     next.snapEnabled !== previous.snapEnabled ||
     next.motionBlur !== previous.motionBlur ||
     next.motionBlurStrength !== previous.motionBlurStrength ||
+    next.markers !== previous.markers ||
+    next.workArea !== previous.workArea ||
     next.layers !== previous.layers
   );
 }
@@ -274,7 +322,10 @@ function safeBlurStrength(value: number): number {
 
 function normalizeTrackFrameRate(track: Keyframe[], duration: number, fps: number): Keyframe[] {
   const result: Keyframe[] = [];
-  for (const key of sortTrack(track).map((item) => ({ ...item, t: snapTime(item.t, duration, fps) }))) {
+  for (const key of sortTrack(track).map((item) => ({
+    ...item,
+    t: snapTime(item.t, duration, fps),
+  }))) {
     const previous = result.at(-1);
     if (previous && Math.abs(previous.t - key.t) < 0.5 / fps) result[result.length - 1] = key;
     else result.push(key);
@@ -309,8 +360,26 @@ function hydrateLayer(layer: Layer): Layer {
   }
   return {
     ...layer,
+    parentOffset:
+      layer.parentOffset &&
+      [
+        layer.parentOffset.a,
+        layer.parentOffset.b,
+        layer.parentOffset.c,
+        layer.parentOffset.d,
+        layer.parentOffset.e,
+        layer.parentOffset.f,
+      ].every(Number.isFinite)
+        ? { ...layer.parentOffset }
+        : undefined,
     timelineOffset: Number.isFinite(layer.timelineOffset) ? layer.timelineOffset : undefined,
     scaleLinked: layer.scaleLinked ?? true,
+    fillEnabled: layer.fillEnabled ?? true,
+    strokeEnabled: layer.strokeEnabled ?? true,
+    pathGrowth:
+      layer.kind === "path"
+        ? { ...DEFAULT_PATH_GROWTH, ...(layer.pathGrowth ?? {}) }
+        : layer.pathGrowth,
     cornerRadius: layer.cornerRadius ?? 8,
     fontFamily: layer.fontFamily ?? "IBM Plex Sans, Source Han Sans SC, sans-serif",
     armed: { ...emptyArmed(false), ...(layer.armed ?? {}) },
@@ -337,7 +406,13 @@ function writeProp(
   if (prop === "fill" || prop === "stroke" || prop === "strokeWidth") {
     if (shouldKey) {
       next.armed[prop] = true;
-      next.tracks[prop] = upsert(next.tracks[prop], snapTime(time, 999, fps), absolute, "ease", fps);
+      next.tracks[prop] = upsert(
+        next.tracks[prop],
+        snapTime(time, 999, fps),
+        absolute,
+        "ease",
+        fps,
+      );
       return next;
     }
     return setBaseValue(next, prop, absolute);
@@ -383,9 +458,13 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   snapEnabled: true,
   motionBlur: false,
   motionBlurStrength: 6,
+  markers: [],
+  workArea: null,
   selectedId: null,
+  selectedLayerIds: [],
   selectedKey: null,
   selectedKeys: [],
+  selectedPathKey: null,
   tool: "select",
   autoKey: false,
   expanded: Object.fromEntries(initialLayers.map((l) => [l.id, false])),
@@ -396,8 +475,10 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
 
   setTime: (t) => set({ time: Math.min(get().duration, Math.max(0, t)) }),
   togglePlay: () => {
-    const { playing, time, duration, fps } = get();
-    if (!playing && time >= duration - 1 / fps) set({ time: 0, playing: true });
+    const { playing, time, duration, fps, workArea } = get();
+    const start = workArea?.start ?? 0;
+    const end = workArea?.end ?? duration;
+    if (!playing && time >= end - 1 / fps) set({ time: start, playing: true });
     else set({ playing: !playing });
   },
   toggleLoop: () => set({ loop: !get().loop }),
@@ -405,10 +486,17 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   setDuration: (d) => {
     const duration = Number.isFinite(d) ? Math.min(30, Math.max(0.5, d)) : get().duration;
     const fps = get().fps;
+    const currentWorkArea = get().workArea;
     const latestIn = Math.max(0, Math.floor(duration * fps + 1e-6) - 1) / fps;
+    const workStart = currentWorkArea ? Math.min(latestIn, currentWorkArea.start) : 0;
+    const workEnd = currentWorkArea
+      ? Math.max(workStart + 1 / fps, Math.min(duration, currentWorkArea.end))
+      : duration;
     set({
       duration,
       time: Math.min(get().time, duration),
+      workArea: currentWorkArea ? { start: workStart, end: Math.min(duration, workEnd) } : null,
+      markers: get().markers.map((marker) => ({ ...marker, t: Math.min(marker.t, duration) })),
       layers: get().layers.map((layer) => {
         const tracks = { ...layer.tracks };
         for (const prop of PROPS) {
@@ -438,14 +526,29 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const state = get();
     const fps = normalizeFrameRate(requestedFps, state.fps);
     if (fps === state.fps) return;
+    const currentWorkArea = state.workArea;
+    const workStart = currentWorkArea
+      ? Math.min(state.duration - 1 / fps, snapTime(currentWorkArea.start, state.duration, fps))
+      : 0;
     const layers = state.layers.map((layer) => {
       const tracks = { ...layer.tracks };
-      for (const prop of PROPS) tracks[prop] = normalizeTrackFrameRate(layer.tracks[prop], state.duration, fps);
+      for (const prop of PROPS)
+        tracks[prop] = normalizeTrackFrameRate(layer.tracks[prop], state.duration, fps);
       return { ...layer, tracks };
     });
     set({
       fps,
       layers,
+      markers: get().markers.map((marker) => ({
+        ...marker,
+        t: snapTime(marker.t, state.duration, fps),
+      })),
+      workArea: currentWorkArea
+        ? {
+            start: workStart,
+            end: Math.max(workStart + 1 / fps, snapTime(currentWorkArea.end, state.duration, fps)),
+          }
+        : null,
       time: snapTime(state.time, state.duration, fps),
       selectedKey: null,
       selectedKeys: [],
@@ -476,13 +579,145 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   setPx: (n) => set({ pxPerSec: Math.min(480, Math.max(40, n)) }),
   setTool: (tool) => set({ tool }),
   toggleAutoKey: () => set({ autoKey: !get().autoKey }),
-  selectLayer: (id) =>
+  selectLayer: (id, mode = "replace") => {
+    const state = get();
+    if (!id) {
+      set({
+        selectedId: null,
+        selectedLayerIds: [],
+        selectedKey: null,
+        selectedKeys: [],
+        selectedPathKey: null,
+      });
+      return;
+    }
+    const existing = state.selectedLayerIds.length
+      ? state.selectedLayerIds
+      : state.selectedId
+        ? [state.selectedId]
+        : [];
+    let selectedLayerIds: string[];
+    if (mode === "toggle") {
+      selectedLayerIds = existing.includes(id)
+        ? existing.filter((item) => item !== id)
+        : [...existing, id];
+    } else if (mode === "range") {
+      const rows = [...state.layers].reverse().map((layer) => layer.id);
+      const anchor = rows.indexOf(existing[0] ?? id);
+      const target = rows.indexOf(id);
+      selectedLayerIds =
+        anchor < 0 || target < 0
+          ? [id]
+          : rows.slice(Math.min(anchor, target), Math.max(anchor, target) + 1);
+    } else {
+      selectedLayerIds = [id];
+    }
+    const selectedId = selectedLayerIds.includes(id) ? id : (selectedLayerIds.at(-1) ?? null);
     set({
-      selectedId: id,
+      selectedId,
+      selectedLayerIds,
       selectedKey: null,
       selectedKeys: [],
-    }),
-  toggleExpanded: (id) => set({ expanded: { ...get().expanded, [id]: !get().expanded[id] } }),
+      selectedPathKey: null,
+    });
+  },
+  createGroup: (requestedIds) => {
+    const state = get();
+    const ids = [...new Set(requestedIds)].filter((id) =>
+      state.layers.some((layer) => layer.id === id),
+    );
+    if (ids.length < 2) return;
+    const selected = ids.map((id) => state.layers.find((layer) => layer.id === id)!);
+    const commonParent = selected[0].groupId;
+    if (selected.some((layer) => layer.groupId !== commonParent)) return;
+    const seq = state.seq + 1;
+    const group = makeLayer("group", 0, 0, seq);
+    group.name = `组 ${seq}`;
+    group.groupId = commonParent;
+    group.w = state.projectWidth;
+    group.h = state.projectHeight;
+    group.fill = "none";
+    group.stroke = "none";
+    const idSet = new Set(ids);
+    const layers = [
+      ...state.layers.map((layer) =>
+        idSet.has(layer.id) ? { ...layer, groupId: group.id } : layer,
+      ),
+      group,
+    ];
+    set({
+      seq,
+      layers,
+      selectedId: group.id,
+      selectedLayerIds: [group.id],
+      selectedKey: null,
+      selectedKeys: [],
+      selectedPathKey: null,
+      expanded: { ...state.expanded, [group.id]: true },
+    });
+  },
+  ungroupLayer: (id) => {
+    const group = get().layers.find((layer) => layer.id === id && layer.kind === "group");
+    if (!group) return;
+    const layers = get()
+      .layers.filter((layer) => layer.id !== id)
+      .map((layer) => (layer.groupId === id ? { ...layer, groupId: group.groupId } : layer));
+    set({
+      layers,
+      selectedId:
+        layers.find((layer) => layer.id === group.groupId)?.id ??
+        layers.find((layer) => layer.id !== id)?.id ??
+        null,
+      selectedLayerIds: [],
+      selectedKey: null,
+      selectedKeys: [],
+      expanded: Object.fromEntries(Object.entries(get().expanded).filter(([key]) => key !== id)),
+    });
+  },
+  setLayerParent: (id, parentId) => {
+    const state = get();
+    const layer = state.layers.find((item) => item.id === id);
+    const parent = parentId ? state.layers.find((item) => item.id === parentId) : undefined;
+    if (
+      !layer ||
+      layer.kind === "group" ||
+      (parentId && (!parent || parent.kind === "group" || parent.id === id))
+    )
+      return;
+    let cursor = parent;
+    const visited = new Set<string>();
+    while (cursor && !visited.has(cursor.id)) {
+      if (cursor.id === id) return;
+      visited.add(cursor.id);
+      cursor = cursor.parentId
+        ? state.layers.find((item) => item.id === cursor!.parentId && item.kind !== "group")
+        : undefined;
+    }
+    if (layer.parentId === (parent?.id ?? undefined)) return;
+    const world = layerWorldMatrix(layer, state.layers, state.time, state.fps);
+    const parentWorld = parent
+      ? layerWorldMatrix(parent, state.layers, state.time, state.fps)
+      : IDENTITY_MATRIX;
+    const local = layerLocalMatrix(layer, state.time, state.fps);
+    const offset: AffineMatrix = multiplyMatrices(
+      invertMatrix(parentWorld),
+      multiplyMatrices(world, invertMatrix(local)),
+    );
+    set({
+      layers: mapLayer(state.layers, id, (current) => ({
+        ...current,
+        parentId: parent?.id,
+        parentOffset: offset,
+      })),
+    });
+  },
+  toggleExpanded: (id) => {
+    const state = get();
+    const isGroup = state.layers.some((layer) => layer.id === id && layer.kind === "group");
+    const defaultOpen = isGroup || id.includes(":");
+    const current = state.expanded[id] ?? defaultOpen;
+    set({ expanded: { ...state.expanded, [id]: !current } });
+  },
   addShape: (kind, x, y, bounds) => {
     const seq = get().seq + 1;
     const layer = makeLayer(kind, x, y, seq);
@@ -491,10 +726,12 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       seq,
       layers: [...get().layers, layer],
       selectedId: layer.id,
+      selectedLayerIds: [layer.id],
       expanded: { ...get().expanded, [layer.id]: false },
       tool: "select",
       selectedKey: null,
       selectedKeys: [],
+      selectedPathKey: null,
     });
   },
   addPath: (points, closed = false) => {
@@ -536,10 +773,12 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       seq,
       layers: [...get().layers, layer],
       selectedId: layer.id,
+      selectedLayerIds: [layer.id],
       expanded: { ...get().expanded, [layer.id]: false },
       tool: "select",
       selectedKey: null,
       selectedKeys: [],
+      selectedPathKey: null,
     });
   },
   moveLayer: (id, direction) => {
@@ -574,7 +813,13 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   moveLayerClip: (id, deltaFrames) => {
     const state = get();
     const layer = state.layers.find((item) => item.id === id);
-    if (!layer || !Number.isFinite(deltaFrames) || Math.round(deltaFrames) === 0) return;
+    if (
+      !layer ||
+      layerIsLocked(layer, state.layers) ||
+      !Number.isFinite(deltaFrames) ||
+      Math.round(deltaFrames) === 0
+    )
+      return;
     const { duration, fps } = state;
     const frame = 1 / fps;
     const currentOffset = layer.timelineOffset ?? 0;
@@ -584,7 +829,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const minOffset = -baseIn;
     const maxOffset = duration - baseOut;
     const requestedOffset = currentOffset + Math.round(deltaFrames) * frame;
-    const nextOffset = Math.round(Math.min(maxOffset, Math.max(minOffset, requestedOffset)) * fps) / fps;
+    const nextOffset =
+      Math.round(Math.min(maxOffset, Math.max(minOffset, requestedOffset)) * fps) / fps;
     const appliedFrames = Math.round((nextOffset - currentOffset) * fps);
     if (appliedFrames === 0) return;
     const shift = appliedFrames * frame;
@@ -602,10 +848,128 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
           ...current,
           timelineOffset: Math.abs(nextOffset) < 1e-6 ? undefined : nextOffset,
           tracks,
+          pathKeys: current.pathKeys?.map((key) => ({
+            ...key,
+            t: Math.max(0, Math.min(duration, key.t + shift)),
+          })),
         };
       }),
     });
   },
+  splitLayerAtTime: (id, requestedTime) => {
+    const state = get();
+    const layer = state.layers.find((item) => item.id === id);
+    if (!layer || layer.kind === "group" || layerIsLocked(layer, state.layers)) return null;
+    const { inPoint, outPoint } = layerClipRange(layer, state.duration, state.fps);
+    const splitTime = snapTime(requestedTime, state.duration, state.fps);
+    const frame = 1 / state.fps;
+    if (splitTime <= inPoint + frame / 2 || splitTime >= outPoint - frame / 2) return null;
+    const offset = layer.timelineOffset ?? 0;
+    const localSplit = snapTime(splitTime - offset, state.duration, state.fps);
+    const splitLayer: Layer = {
+      ...layer,
+      id: nid("layer"),
+      name: `${layer.name}（拆分）`,
+      clipIn: localSplit,
+      path: layer.path?.map((point) => ({ ...point })),
+      armed: { ...layer.armed },
+      tracks: Object.fromEntries(
+        PROPS.map((prop) => [
+          prop,
+          layer.tracks[prop].map((key) => ({
+            ...key,
+            bezier: { ...key.bezier },
+            ...(key.motionIn ? { motionIn: { ...key.motionIn } } : {}),
+            ...(key.motionOut ? { motionOut: { ...key.motionOut } } : {}),
+          })),
+        ]),
+      ) as Layer["tracks"],
+    };
+    const layers = [...state.layers];
+    const index = layers.findIndex((item) => item.id === id);
+    layers[index] = { ...layer, clipOut: localSplit };
+    layers.splice(index + 1, 0, splitLayer);
+    set({
+      layers,
+      selectedId: splitLayer.id,
+      selectedLayerIds: [splitLayer.id],
+      selectedKey: null,
+      selectedKeys: [],
+      expanded: { ...state.expanded, [splitLayer.id]: false },
+    });
+    return splitLayer.id;
+  },
+  rippleDeleteLayer: (id) => {
+    const state = get();
+    const selected = state.layers.find((item) => item.id === id);
+    if (!selected || selected.kind === "group" || layerIsLocked(selected, state.layers)) return;
+    const { inPoint, outPoint } = layerClipRange(selected, state.duration, state.fps);
+    const deltaFrames = Math.max(1, Math.round((outPoint - inPoint) * state.fps));
+    const frame = 1 / state.fps;
+    const following = state.layers
+      .filter((item) => item.id !== id)
+      .filter(
+        (item) => layerClipRange(item, state.duration, state.fps).inPoint >= outPoint - frame / 2,
+      )
+      .map((item) => item.id);
+    const remaining = state.layers.filter((item) => item.id !== id);
+    const nextSelected = remaining.find((item) => item.id === selected.id) ?? remaining[0] ?? null;
+    get().beginUndoGroup();
+    set({
+      layers: remaining,
+      selectedId: nextSelected?.id ?? null,
+      selectedLayerIds: nextSelected ? [nextSelected.id] : [],
+      selectedKey: null,
+      selectedKeys: [],
+    });
+    for (const followingId of following) get().moveLayerClip(followingId, -deltaFrames);
+    get().endUndoGroup();
+  },
+  toggleLayerLocked: (id) => {
+    set({ layers: mapLayer(get().layers, id, (layer) => ({ ...layer, locked: !layer.locked })) });
+  },
+  toggleLayerSolo: (id) => {
+    set({ layers: mapLayer(get().layers, id, (layer) => ({ ...layer, solo: !layer.solo })) });
+  },
+  addMarker: (requestedTime) => {
+    const state = get();
+    const t = snapTime(requestedTime, state.duration, state.fps);
+    if (state.markers.some((marker) => Math.abs(marker.t - t) < 0.5 / state.fps)) return;
+    set({
+      markers: [
+        ...state.markers,
+        { id: nid("marker"), t, name: `标记 ${state.markers.length + 1}` },
+      ].sort((a, b) => a.t - b.t),
+    });
+  },
+  moveMarker: (id, requestedTime) => {
+    const state = get();
+    const t = snapTime(requestedTime, state.duration, state.fps);
+    set({
+      markers: state.markers
+        .map((marker) => (marker.id === id ? { ...marker, t } : marker))
+        .sort((a, b) => a.t - b.t),
+    });
+  },
+  removeMarker: (id) => set({ markers: get().markers.filter((marker) => marker.id !== id) }),
+  renameMarker: (id, name) =>
+    set({
+      markers: get().markers.map((marker) =>
+        marker.id === id ? { ...marker, name: name.trim() || marker.name } : marker,
+      ),
+    }),
+  setWorkAreaEdge: (edge, requestedTime) => {
+    const state = get();
+    const time = snapTime(requestedTime, state.duration, state.fps);
+    const current = state.workArea ?? { start: 0, end: state.duration };
+    const frame = 1 / state.fps;
+    const workArea =
+      edge === "start"
+        ? { start: Math.min(time, current.end - frame), end: current.end }
+        : { start: current.start, end: Math.max(time, current.start + frame) };
+    set({ workArea });
+  },
+  clearWorkArea: () => set({ workArea: null }),
   setLayerClipRange: (id, requestedIn, requestedOut) => {
     const state = get();
     const { duration, fps } = state;
@@ -615,15 +979,15 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const latestIn = Math.max(0, Math.floor(duration * fps + 1e-6) - 1) / fps;
     const offset = layer.timelineOffset ?? 0;
     const inPoint = Math.min(latestIn, Math.max(0, snapTime(requestedIn - offset, duration, fps)));
-    const snappedOut = requestedOut - offset >= duration
-      ? duration
-      : snapTime(requestedOut - offset, duration, fps);
+    const snappedOut =
+      requestedOut - offset >= duration ? duration : snapTime(requestedOut - offset, duration, fps);
     const outPoint = Math.min(duration, Math.max(inPoint + frame, snappedOut));
     const current = layerClipRange(layer, duration, fps);
     if (
       Math.abs(current.inPoint - (offset + inPoint)) < 1e-6 &&
       Math.abs(current.outPoint - (offset + outPoint)) < 1e-6
-    ) return;
+    )
+      return;
     set({
       layers: mapLayer(get().layers, id, (layer) => ({
         ...layer,
@@ -636,6 +1000,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const field = side === "in" ? "motionIn" : "motionOut";
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const xHasKey = layer.tracks.x.some((key) => key.id === keyId);
         const prop: PropKey = xHasKey ? "x" : "y";
         return {
@@ -651,23 +1016,177 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     });
   },
   setPathPoint: (id, index, point) => {
+    const state = get();
+    const target = state.layers.find((layer) => layer.id === id);
+    if (!target || target.kind !== "path" || layerIsLocked(target, state.layers)) return;
+    const time = snapTime(state.time, state.duration, state.fps);
+    const keys = [...(target.pathKeys ?? [])];
+    if (!keys.length) {
+      if (!target.path?.[index]) return;
+      const path = target.path.map((existing, pointIndex) =>
+        pointIndex === index ? { ...point } : existing,
+      );
+      set({ layers: mapLayer(state.layers, id, (layer) => ({ ...layer, path })) });
+      return;
+    }
+    let keyIndex = keys.findIndex((key) => Math.abs(key.t - time) < 0.5 / state.fps);
+    if (keyIndex < 0) {
+      const current = pathAt(target, time, state.fps);
+      keys.push({
+        id: nid("pk"),
+        t: time,
+        points: current.points.map((item) => ({ ...item })),
+        closed: current.closed,
+        interp: "ease",
+        bezier: { ...DEFAULT_BEZIER },
+      });
+      keyIndex = keys.length - 1;
+    }
+    const key = keys[keyIndex];
+    if (!key.points[index]) return;
+    keys[keyIndex] = {
+      ...key,
+      points: key.points.map((existing, pointIndex) =>
+        pointIndex === index ? { ...point } : existing,
+      ),
+    };
     set({
-      layers: mapLayer(get().layers, id, (layer) => {
-        if (!layer.path || !layer.path[index]) return layer;
-        const path = layer.path.map((existing, pointIndex) =>
-          pointIndex === index ? { ...point } : existing,
+      layers: mapLayer(state.layers, id, (layer) => ({
+        ...layer,
+        pathKeys: keys.sort((a, b) => a.t - b.t),
+      })),
+    });
+  },
+  addPathKey: (id) => {
+    const state = get();
+    const layer = state.layers.find((item) => item.id === id && item.kind === "path");
+    if (!layer || layerIsLocked(layer, state.layers)) return;
+    const time = snapTime(state.time, state.duration, state.fps);
+    const keys = [...(layer.pathKeys ?? [])];
+    if (!keys.length && layer.path) {
+      keys.push({
+        id: nid("pk"),
+        t: 0,
+        points: layer.path.map((point) => ({ ...point })),
+        closed: layer.closed ?? false,
+        interp: "ease",
+        bezier: { ...DEFAULT_BEZIER },
+      });
+    }
+    const existing = keys.find((key) => Math.abs(key.t - time) < 0.5 / state.fps);
+    const active = existing ?? {
+      id: nid("pk"),
+      t: time,
+      ...pathAt(layer, time, state.fps),
+      interp: "ease" as const,
+      bezier: { ...DEFAULT_BEZIER },
+    };
+    const nextKeys = [
+      ...keys.filter((key) => key.id !== existing?.id && Math.abs(key.t - time) >= 0.5 / state.fps),
+      active,
+    ].sort((a, b) => a.t - b.t);
+    set({
+      layers: mapLayer(state.layers, id, (current) => ({ ...current, pathKeys: nextKeys })),
+      selectedId: id,
+      selectedLayerIds: [id],
+      selectedPathKey: { layerId: id, id: active.id },
+      selectedKey: null,
+      selectedKeys: [],
+      playing: false,
+    });
+  },
+  selectPathKey: (key) => {
+    if (!key) {
+      set({ selectedPathKey: null, playing: false });
+      return;
+    }
+    const state = get();
+    const layer = state.layers.find((item) => item.id === key.layerId);
+    const frame = layer?.pathKeys?.find((item) => item.id === key.id);
+    if (!layer || !frame) return;
+    set({
+      selectedPathKey: key,
+      selectedId: layer.id,
+      selectedLayerIds: [layer.id],
+      selectedKey: null,
+      selectedKeys: [],
+      time: frame.t,
+      playing: false,
+    });
+  },
+  movePathKey: (id, keyId, requestedTime) => {
+    const state = get();
+    const time = snapTime(requestedTime, state.duration, state.fps);
+    set({
+      layers: mapLayer(state.layers, id, (layer) => {
+        if (layerIsLocked(layer, state.layers)) return layer;
+        const current = layer.pathKeys?.find((key) => key.id === keyId);
+        if (!current) return layer;
+        const keys = (layer.pathKeys ?? []).filter(
+          (key) => key.id !== keyId && Math.abs(key.t - time) >= 0.5 / state.fps,
         );
-        return { ...layer, path };
+        return { ...layer, pathKeys: [...keys, { ...current, t: time }].sort((a, b) => a.t - b.t) };
       }),
     });
   },
+  patchPathKey: (id, keyId, patch) => {
+    const state = get();
+    set({
+      layers: mapLayer(state.layers, id, (layer) => {
+        if (layerIsLocked(layer, state.layers)) return layer;
+        const keys = (layer.pathKeys ?? []).map((key) =>
+          key.id === keyId ? { ...key, ...patch } : key,
+        );
+        return { ...layer, pathKeys: keys };
+      }),
+    });
+  },
+  deletePathKey: (id, keyId) => {
+    const state = get();
+    const layer = state.layers.find((item) => item.id === id);
+    if (!layer || layerIsLocked(layer, state.layers)) return;
+    const keys = (layer.pathKeys ?? []).filter((key) => key.id !== keyId);
+    set({
+      layers: mapLayer(state.layers, id, (current) => ({ ...current, pathKeys: keys })),
+      selectedPathKey: state.selectedPathKey?.id === keyId ? null : state.selectedPathKey,
+    });
+  },
   deleteLayer: (id) => {
-    const layers = get().layers.filter((l) => l.id !== id);
+    const state = get();
+    const removed = state.layers.find((layer) => layer.id === id);
+    if (!removed) return;
+    let layers = state.layers;
+    if (removed.kind === "group") {
+      layers = layers.map((layer) =>
+        layer.groupId === id ? { ...layer, groupId: removed.groupId } : layer,
+      );
+    } else {
+      const oldParent = removed.parentId
+        ? state.layers.find((layer) => layer.id === removed.parentId)
+        : undefined;
+      const oldParentWorld = oldParent
+        ? layerWorldMatrix(oldParent, state.layers, state.time, state.fps)
+        : IDENTITY_MATRIX;
+      layers = layers.map((layer) => {
+        if (layer.parentId !== id) return layer;
+        const world = layerWorldMatrix(layer, state.layers, state.time, state.fps);
+        const local = layerLocalMatrix(layer, state.time, state.fps);
+        const parentOffset = multiplyMatrices(
+          invertMatrix(oldParentWorld),
+          multiplyMatrices(world, invertMatrix(local)),
+        );
+        return { ...layer, parentId: removed.parentId, parentOffset };
+      });
+    }
+    layers = layers.filter((layer) => layer.id !== id);
     set({
       layers,
-      selectedId: get().selectedId === id ? (layers.at(-1)?.id ?? null) : get().selectedId,
-      selectedKey: get().selectedKey?.layerId === id ? null : get().selectedKey,
-      selectedKeys: get().selectedKeys.filter((key) => key.layerId !== id),
+      selectedId: state.selectedId === id ? (layers.at(-1)?.id ?? null) : state.selectedId,
+      selectedLayerIds: state.selectedLayerIds.filter((layerId) => layerId !== id),
+      selectedKey: state.selectedKey?.layerId === id ? null : state.selectedKey,
+      selectedKeys: state.selectedKeys.filter((key) => key.layerId !== id),
+      selectedPathKey: state.selectedPathKey?.layerId === id ? null : state.selectedPathKey,
+      expanded: Object.fromEntries(Object.entries(state.expanded).filter(([key]) => key !== id)),
     });
   },
   toggleVisible: (id) =>
@@ -676,6 +1195,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   setPaint: (id, patch) =>
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const next = { ...layer, ...patch, rest: { ...layer.rest } };
         if (patch.fill !== undefined) next.rest.fill = colorToNumber(patch.fill);
         if (patch.stroke !== undefined) next.rest.stroke = colorToNumber(patch.stroke);
@@ -687,10 +1207,11 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const ids = new Set(track.map((key) => key.id));
     const selectedKey = get().selectedKey;
     set({
-      layers: mapLayer(get().layers, id, (layer) => ({
-        ...layer,
-        tracks: { ...layer.tracks, [prop]: [...track].sort((a, b) => a.t - b.t) },
-      })),
+      layers: mapLayer(get().layers, id, (layer) =>
+        layerIsLocked(layer, get().layers)
+          ? layer
+          : { ...layer, tracks: { ...layer.tracks, [prop]: [...track].sort((a, b) => a.t - b.t) } },
+      ),
       selectedKeys: get().selectedKeys.filter(
         (key) => key.layerId !== id || key.prop !== prop || ids.has(key.id),
       ),
@@ -704,6 +1225,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const { time, autoKey, duration, fps } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const written = writeProp(layer, prop, absolute, time, autoKey || forceKey, fps);
         const tracks = { ...written.tracks };
         tracks[prop] = tracks[prop].map((k) => ({ ...k, t: Math.min(k.t, duration) }));
@@ -713,15 +1235,17 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   },
   toggleScaleLinked: (id) =>
     set({
-      layers: mapLayer(get().layers, id, (layer) => ({
-        ...layer,
-        scaleLinked: !(layer.scaleLinked ?? true),
-      })),
+      layers: mapLayer(get().layers, id, (layer) =>
+        layerIsLocked(layer, get().layers)
+          ? layer
+          : { ...layer, scaleLinked: !(layer.scaleLinked ?? true) },
+      ),
     }),
   moveBy: (id, dx, dy, origin) => {
     const { time, autoKey, fps } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         let next = layer;
         const armX = layer.armed.x || autoKey;
         const armY = layer.armed.y || autoKey;
@@ -737,6 +1261,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const { time, duration, fps } = get();
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         if (layer.armed[prop]) {
           const current = sample(layer.tracks[prop], time, layer.rest[prop], isColorProp(prop));
           const next = {
@@ -769,6 +1294,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const time = snapTime(get().time, duration, fps);
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const hit = keyNear(layer.tracks[prop], time, fps);
         if (hit) {
           const track = layer.tracks[prop].filter((k) => k.id !== hit.id);
@@ -791,7 +1317,10 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         return {
           ...layer,
           armed: { ...layer.armed, [prop]: true },
-          tracks: { ...layer.tracks, [prop]: upsert(layer.tracks[prop], time, current, "ease", fps) },
+          tracks: {
+            ...layer.tracks,
+            [prop]: upsert(layer.tracks[prop], time, current, "ease", fps),
+          },
         };
       }),
       selectedKey: null,
@@ -799,10 +1328,13 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     });
   },
   punchKeys: (id) => {
-    const { time: currentTime, duration, fps } = get();
+    const state = get();
+    if (state.layers.find((layer) => layer.id === id)?.kind === "group") return;
+    const { time: currentTime, duration, fps } = state;
     const time = snapTime(currentTime, duration, fps);
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const armedProps = PROPS.filter((p) => layer.armed[p]);
         const targets = armedProps.length ? armedProps : PROPS;
         let next = layer;
@@ -877,11 +1409,18 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   },
   selectKey: (sel, extend = false) => {
     if (!sel) {
-      set({ selectedKey: null, selectedKeys: [], playing: false });
+      set({ selectedKey: null, selectedKeys: [], selectedPathKey: null, playing: false });
       return;
     }
     if (!extend) {
-      set({ selectedKey: sel, selectedKeys: [sel], selectedId: sel.layerId, playing: false });
+      set({
+        selectedKey: sel,
+        selectedKeys: [sel],
+        selectedPathKey: null,
+        selectedId: sel.layerId,
+        selectedLayerIds: [sel.layerId],
+        playing: false,
+      });
       return;
     }
     const current = get().selectedKeys;
@@ -892,7 +1431,9 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       selectedKeys,
       selectedKey: selectedKeys.at(-1) ?? null,
+      selectedPathKey: null,
       selectedId: sel.layerId,
+      selectedLayerIds: [sel.layerId],
       playing: false,
     });
   },
@@ -901,7 +1442,9 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       selectedKeys,
       selectedKey,
+      selectedPathKey: null,
       selectedId: selectedKey?.layerId ?? get().selectedId,
+      selectedLayerIds: selectedKey ? [selectedKey.layerId] : get().selectedLayerIds,
       playing: false,
     });
   },
@@ -910,6 +1453,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const time = snapTime(t, duration, fps);
     set({
       layers: mapLayer(get().layers, id, (layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const without = layer.tracks[prop].filter(
           (k) => k.id !== keyId && Math.abs(k.t - time) >= 0.5 / fps,
         );
@@ -931,6 +1475,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const moves = new Map(keys.map((key) => [`${key.layerId}:${key.prop}:${key.id}`, key]));
     set({
       layers: get().layers.map((layer) => {
+        if (layerIsLocked(layer, get().layers)) return layer;
         const tracks = { ...layer.tracks };
         for (const prop of PROPS) {
           const selectedMoves = keys.filter((key) => key.layerId === layer.id && key.prop === prop);
@@ -966,6 +1511,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     const existingLayerIds = new Set(state.layers.map((layer) => layer.id));
     const pasted: SelectedKey[] = [];
     const layers = state.layers.map((layer) => {
+      if (layerIsLocked(layer, state.layers)) return layer;
       const targets = copied.filter((item) => {
         const targetId =
           remapSingleLayer ?? (existingLayerIds.has(item.layerId) ? item.layerId : null);
@@ -998,6 +1544,9 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       layers,
       selectedId: pasted.at(-1)?.layerId ?? state.selectedId,
+      selectedLayerIds: pasted.length
+        ? [...new Set(pasted.map((key) => key.layerId))]
+        : state.selectedLayerIds,
       selectedKey: pasted.at(-1) ?? null,
       selectedKeys: pasted,
       playing: false,
@@ -1012,6 +1561,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
         : [];
     if (selected.length === 0) return;
     const layers = state.layers.map((layer) => {
+      if (layerIsLocked(layer, state.layers)) return layer;
       const tracks = { ...layer.tracks };
       let changed = false;
       for (const prop of PROPS) {
@@ -1048,6 +1598,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     applyingHistory = true;
     set({
       ...frame,
+      selectedPathKey: null,
       playing: false,
     });
     applyingHistory = false;
@@ -1062,6 +1613,7 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     applyingHistory = true;
     set({
       ...frame,
+      selectedPathKey: null,
       playing: false,
     });
     applyingHistory = false;
@@ -1076,20 +1628,25 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
   },
   patchKey: (id, prop, keyId, patch) => {
     set({
-      layers: mapLayer(get().layers, id, (layer) => ({
-        ...layer,
-        tracks: {
-          ...layer.tracks,
-          [prop]: sortTrack(
-            layer.tracks[prop].map((k) => {
-              if (k.id !== keyId) return k;
-              const state = get();
-              const t = patch.t === undefined ? k.t : snapTime(patch.t, state.duration, state.fps);
-              return { ...k, ...patch, t };
-            }),
-          ),
-        },
-      })),
+      layers: mapLayer(get().layers, id, (layer) =>
+        layerIsLocked(layer, get().layers)
+          ? layer
+          : {
+              ...layer,
+              tracks: {
+                ...layer.tracks,
+                [prop]: sortTrack(
+                  layer.tracks[prop].map((k) => {
+                    if (k.id !== keyId) return k;
+                    const state = get();
+                    const t =
+                      patch.t === undefined ? k.t : snapTime(patch.t, state.duration, state.fps);
+                    return { ...k, ...patch, t };
+                  }),
+                ),
+              },
+            },
+      ),
     });
   },
   deleteSelectedKey: () => {
@@ -1102,8 +1659,10 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       selectedKey: null,
       selectedKeys: [],
+      selectedPathKey: null,
       layers: get().layers.map((layer) => {
         let next = layer;
+        if (layerIsLocked(layer, get().layers)) return layer;
         const layerSelections = selected.filter((key) => key.layerId === layer.id);
         for (const prop of PROPS) {
           const ids = new Set(
@@ -1165,11 +1724,15 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       snapEnabled: true,
       motionBlur: false,
       motionBlurStrength: 6,
+      markers: [],
+      workArea: null,
       time: 0,
       playing: true,
       selectedId: null,
+      selectedLayerIds: [],
       selectedKey: null,
       selectedKeys: [],
+      selectedPathKey: null,
       expanded: Object.fromEntries(layers.map((l) => [l.id, false])),
       seq: layers.length,
       autoKey: false,
@@ -1179,27 +1742,89 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
     set({
       layers: [],
       selectedId: null,
+      selectedLayerIds: [],
       selectedKey: null,
       selectedKeys: [],
+      selectedPathKey: null,
       time: 0,
       playing: false,
+      markers: [],
+      workArea: null,
     }),
   replace: (doc) => {
     const duration = doc.duration || 3;
     const fps = normalizeFrameRate(doc.fps);
-    const layers = (doc.layers?.length ? doc.layers.map(hydrateLayer) : demoLayers()).map((layer) => {
-      const range = layerClipRange(layer, duration, fps);
-      const offset = layer.timelineOffset ?? 0;
-      const baseIn = range.inPoint - offset;
-      const baseOut = range.outPoint - offset;
-      const safeOffset = Math.min(duration - baseOut, Math.max(-baseIn, offset));
-      return {
-        ...layer,
-        timelineOffset: Math.abs(safeOffset) < 1e-6 ? undefined : safeOffset,
-      };
+    let layers = (Array.isArray(doc.layers) ? doc.layers.map(hydrateLayer) : demoLayers()).map(
+      (layer) => {
+        const range = layerClipRange(layer, duration, fps);
+        const offset = layer.timelineOffset ?? 0;
+        const baseIn = range.inPoint - offset;
+        const baseOut = range.outPoint - offset;
+        const safeOffset = Math.min(duration - baseOut, Math.max(-baseIn, offset));
+        return {
+          ...layer,
+          timelineOffset: Math.abs(safeOffset) < 1e-6 ? undefined : safeOffset,
+        };
+      },
+    );
+    const layerById = new Map(layers.map((layer) => [layer.id, layer]));
+    const groupIds = new Set(
+      layers.filter((layer) => layer.kind === "group").map((layer) => layer.id),
+    );
+    layers = layers.map((layer) => ({
+      ...layer,
+      groupId:
+        layer.groupId && groupIds.has(layer.groupId) && layer.groupId !== layer.id
+          ? layer.groupId
+          : undefined,
+      parentId:
+        layer.parentId &&
+        layerById.has(layer.parentId) &&
+        layer.parentId !== layer.id &&
+        layerById.get(layer.parentId)?.kind !== "group"
+          ? layer.parentId
+          : undefined,
+    }));
+    layers = layers.map((layer) => {
+      const seen = new Set([layer.id]);
+      let current: Layer | undefined = layer;
+      while (current?.groupId) {
+        if (seen.has(current.groupId)) return { ...layer, groupId: undefined };
+        seen.add(current.groupId);
+        current = layerById.get(current.groupId);
+      }
+      return layer;
+    });
+    layers = layers.map((layer) => {
+      const seen = new Set([layer.id]);
+      let current: Layer | undefined = layer;
+      while (current?.parentId) {
+        if (seen.has(current.parentId))
+          return { ...layer, parentId: undefined, parentOffset: undefined };
+        seen.add(current.parentId);
+        current = layerById.get(current.parentId);
+      }
+      return layer;
     });
     const projectWidth = safeDimension(doc.projectWidth ?? 800, 800);
     const projectHeight = safeDimension(doc.projectHeight ?? 500, 500);
+    const markers = (doc.markers ?? [])
+      .filter((marker) => marker && typeof marker.id === "string" && Number.isFinite(marker.t))
+      .map((marker) => ({ ...marker, t: snapTime(marker.t, duration, fps) }))
+      .sort((a, b) => a.t - b.t);
+    const requestedWorkArea = doc.workArea;
+    const workStart = requestedWorkArea
+      ? Math.min(duration - 1 / fps, snapTime(requestedWorkArea.start, duration, fps))
+      : 0;
+    const workArea = requestedWorkArea
+      ? {
+          start: Math.min(Math.max(0, duration - 1 / fps), workStart),
+          end: Math.max(
+            Math.min(Math.max(0, duration - 1 / fps), workStart) + 1 / fps,
+            snapTime(requestedWorkArea.end, duration, fps),
+          ),
+        }
+      : null;
     set({
       duration,
       fps,
@@ -1213,13 +1838,17 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       snapEnabled: doc.snapEnabled ?? true,
       motionBlur: doc.motionBlur ?? false,
       motionBlurStrength: safeBlurStrength(doc.motionBlurStrength ?? 6),
+      markers,
+      workArea,
       layers,
       time: 0,
       playing: false,
       selectedId: layers[0]?.id ?? null,
+      selectedLayerIds: layers[0] ? [layers[0].id] : [],
       selectedKey: null,
       selectedKeys: [],
-      expanded: Object.fromEntries(layers.map((l) => [l.id, false])),
+      selectedPathKey: null,
+      expanded: Object.fromEntries(layers.map((l) => [l.id, l.kind === "group"])),
       seq: layers.length,
     });
   },
@@ -1237,6 +1866,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       snapEnabled,
       motionBlur,
       motionBlurStrength,
+      markers,
+      workArea,
       layers,
     } = get();
     return {
@@ -1252,6 +1883,8 @@ export const useDoc = create<DocState & Actions>((set, get) => ({
       snapEnabled,
       motionBlur,
       motionBlurStrength,
+      markers,
+      workArea,
       layers,
     };
   },
@@ -1271,20 +1904,48 @@ useDoc.subscribe((state, previous) => {
   useDoc.setState({ undoCount: undoPast.length, redoCount: 0 });
 });
 
-export function loadSnapshot(): PersistedDoc | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const doc = JSON.parse(raw) as PersistedDoc;
-    if (!doc || !Array.isArray(doc.layers)) return null;
-    return doc;
-  } catch {
-    return null;
-  }
+function isPersistedDoc(value: unknown): value is PersistedDoc {
+  if (!value || typeof value !== "object") return false;
+  const doc = value as Partial<PersistedDoc>;
+  return Array.isArray(doc.layers) && Number.isFinite(doc.duration);
 }
 
-export function saveSnapshot(doc: PersistedDoc) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+export async function loadSnapshot(): Promise<PersistedDoc | null> {
+  try {
+    const saved = await loadDocumentSnapshot();
+    if (isPersistedDoc(saved?.current)) return saved.current;
+    if (isPersistedDoc(saved?.backup)) return saved.backup;
+  } catch {
+    // Existing localStorage documents remain available when IndexedDB is disabled.
+  }
+  for (const key of [STORAGE_KEY, `${STORAGE_KEY}-backup-v1`]) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const doc = JSON.parse(raw) as unknown;
+      if (isPersistedDoc(doc)) return doc;
+    } catch {
+      // Try the recovery copy when the newest snapshot is incomplete or corrupt.
+    }
+  }
+  return null;
+}
+
+export async function saveSnapshot(doc: PersistedDoc): Promise<boolean> {
+  let saved = false;
+  try {
+    await saveDocumentSnapshot(doc);
+    saved = true;
+  } catch {
+    // Fall back to the legacy browser store if IndexedDB is unavailable.
+  }
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(doc));
+    saved = true;
+  } catch {
+    // IndexedDB still has the current document and its previous recovery copy.
+  }
+  return saved;
 }
 
 export function layerById(id: string | null): Layer | undefined {

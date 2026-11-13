@@ -484,8 +484,8 @@ test("strips install params from the app link", () => {
 });
 
 test("names the install page from host slug", () => {
-  assert.equal(appNameFromHost("localhost:8080"), "Grok App");
-  assert.equal(appNameFromHost("172.17.154.217:8080"), "Grok App");
+  assert.equal(appNameFromHost("localhost:3100"), "Grok App");
+  assert.equal(appNameFromHost("172.17.154.217:3100"), "Grok App");
   assert.equal(appNameFromHost("wild-race.grok.me"), "Wild Race");
 });
 

@@ -32,8 +32,9 @@ export const COLOR_PROPS = ["fill", "stroke"] as const;
 export type ColorPropKey = (typeof COLOR_PROPS)[number];
 export type Interp = "linear" | "hold" | "ease" | "bezier";
 export type BezierCurve = { x1: number; y1: number; x2: number; y2: number };
-export type ShapeKind = "rect" | "circle" | "ellipse" | "text" | "image" | "star" | "path";
-export type DrawShapeKind = Exclude<ShapeKind, "image" | "path">;
+export type ShapeKind =
+  "rect" | "circle" | "ellipse" | "text" | "image" | "star" | "path" | "group";
+export type DrawShapeKind = Exclude<ShapeKind, "image" | "path" | "group">;
 export type Tool = "select" | "pen" | DrawShapeKind;
 export const DEFAULT_FONT_FAMILY = "IBM Plex Sans, Source Han Sans SC, sans-serif";
 export const FONT_FAMILIES = [
@@ -52,7 +53,28 @@ export type VectorPathPoint = {
   outX: number;
   outY: number;
 };
+export type PathKeyframe = {
+  id: string;
+  t: number;
+  points: VectorPathPoint[];
+  closed: boolean;
+  interp: Interp;
+  bezier: BezierCurve;
+};
+export type PathGrowthSettings = {
+  enabled: boolean;
+  direction: "forward" | "both";
+  delay: number;
+  duration: number;
+};
+export const DEFAULT_PATH_GROWTH: PathGrowthSettings = {
+  enabled: false,
+  direction: "forward",
+  delay: 0,
+  duration: 1,
+};
 export type MotionTangent = { x: number; y: number };
+export type AffineMatrix = { a: number; b: number; c: number; d: number; e: number; f: number };
 
 export const PROP_LABEL: Record<PropKey, string> = {
   opacity: "透明度",
@@ -83,6 +105,13 @@ export type Layer = {
   kind: ShapeKind;
   name: string;
   visible: boolean;
+  locked?: boolean;
+  solo?: boolean;
+  /** Organizational folder membership; groups do not affect child transforms. */
+  groupId?: string;
+  /** Transform parent. The offset preserves the child’s world pose when linked. */
+  parentId?: string;
+  parentOffset?: AffineMatrix;
   /** Composition-time trim range; omitted ends follow the project boundaries. */
   clipIn?: number;
   clipOut?: number;
@@ -90,7 +119,9 @@ export type Layer = {
   timelineOffset?: number;
   scaleLinked?: boolean;
   fill: string;
+  fillEnabled: boolean;
   stroke: string;
+  strokeEnabled: boolean;
   strokeWidth: number;
   text: string;
   fontSize: number;
@@ -101,6 +132,8 @@ export type Layer = {
   /** Normalized anchor positions and tangent handles for custom pen paths. */
   path?: VectorPathPoint[];
   closed?: boolean;
+  pathKeys?: PathKeyframe[];
+  pathGrowth?: PathGrowthSettings;
   x: number;
   y: number;
   w: number;
@@ -123,8 +156,12 @@ export type PersistedDoc = {
   snapEnabled?: boolean;
   motionBlur?: boolean;
   motionBlurStrength?: number;
+  markers?: TimelineMarker[];
+  workArea?: { start: number; end: number } | null;
   layers: Layer[];
 };
+
+export type TimelineMarker = { id: string; t: number; name: string };
 
 export type MotionBlurSettings = { enabled: boolean; strength: number };
 
@@ -225,9 +262,40 @@ export function layerClipRange(
   return { inPoint: offset + localIn, outPoint: offset + localOut };
 }
 
-export function layerIsActive(layer: Layer, time: number, duration: number, fps = DEFAULT_FPS): boolean {
+export function layerIsActive(
+  layer: Layer,
+  time: number,
+  duration: number,
+  fps = DEFAULT_FPS,
+): boolean {
   const { inPoint, outPoint } = layerClipRange(layer, duration, fps);
   return time >= inPoint - 1e-6 && time <= outPoint + 1e-6;
+}
+
+export function pathGrowthProgress(
+  layer: Layer,
+  time: number,
+  duration: number,
+  fps = DEFAULT_FPS,
+): number {
+  const growth = layer.pathGrowth;
+  if (layer.kind !== "path" || !growth?.enabled) return 1;
+  const { inPoint } = layerClipRange(layer, duration, fps);
+  const start = inPoint + Math.max(0, growth.delay);
+  const length = Math.max(1 / fps, growth.duration);
+  return Math.min(1, Math.max(0, (time - start) / length));
+}
+
+export function pathGrowthDashArray(
+  progress: number,
+  direction: PathGrowthSettings["direction"],
+): string {
+  const amount = Math.min(1, Math.max(0, progress));
+  if (direction === "both") {
+    const half = amount / 2;
+    return `${half} ${1 - amount} ${half} 1`;
+  }
+  return `${amount} 1`;
 }
 
 export function fmtTime(t: number, fps = DEFAULT_FPS): string {
@@ -260,6 +328,7 @@ export function sample(track: Keyframe[], t: number, fallback: number, color = f
     const a = sorted[i];
     const b = sorted[i + 1];
     if (t < a.t || t > b.t) continue;
+    if (t >= b.t) return b.v;
     if (a.interp === "hold") return a.v;
     const span = b.t - a.t;
     const u = span <= 1e-8 ? 0 : (t - a.t) / span;
@@ -358,7 +427,8 @@ export function positionAt(layer: Layer, t: number, fps = DEFAULT_FPS): { x: num
     const startTime = times[index];
     const endTime = times[index + 1];
     if (t < startTime || t > endTime) continue;
-    const startKey = keyNear(layer.tracks.x, startTime, fps) ?? keyNear(layer.tracks.y, startTime, fps);
+    const startKey =
+      keyNear(layer.tracks.x, startTime, fps) ?? keyNear(layer.tracks.y, startTime, fps);
     const endKey = keyNear(layer.tracks.x, endTime, fps) ?? keyNear(layer.tracks.y, endTime, fps);
     if (startKey?.interp !== "bezier" || (!startKey.motionOut && !endKey?.motionIn)) {
       return rawPositionAt(layer, t);
@@ -374,7 +444,10 @@ export function positionAt(layer: Layer, t: number, fps = DEFAULT_FPS): { x: num
       x: end.x + (endKey?.motionIn?.x ?? -delta.x / 3),
       y: end.y + (endKey?.motionIn?.y ?? -delta.y / 3),
     };
-    const progress = bezierProgress((t - startTime) / Math.max(1e-8, endTime - startTime), startKey.bezier);
+    const progress = bezierProgress(
+      (t - startTime) / Math.max(1e-8, endTime - startTime),
+      startKey.bezier,
+    );
     return cubicPoint(start, control1, control2, end, progress);
   }
   return rawPositionAt(layer, t);
@@ -405,12 +478,190 @@ export function pose(layer: Layer, t: number, fps = DEFAULT_FPS) {
   };
 }
 
+export const IDENTITY_MATRIX: AffineMatrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+
+export function multiplyMatrices(left: AffineMatrix, right: AffineMatrix): AffineMatrix {
+  return {
+    a: left.a * right.a + left.c * right.b,
+    b: left.b * right.a + left.d * right.b,
+    c: left.a * right.c + left.c * right.d,
+    d: left.b * right.c + left.d * right.d,
+    e: left.a * right.e + left.c * right.f + left.e,
+    f: left.b * right.e + left.d * right.f + left.f,
+  };
+}
+
+export function invertMatrix(matrix: AffineMatrix): AffineMatrix {
+  const determinant = matrix.a * matrix.d - matrix.b * matrix.c;
+  if (Math.abs(determinant) < 1e-10) return { ...IDENTITY_MATRIX };
+  const inverse = 1 / determinant;
+  const a = matrix.d * inverse;
+  const b = -matrix.b * inverse;
+  const c = -matrix.c * inverse;
+  const d = matrix.a * inverse;
+  return { a, b, c, d, e: -(a * matrix.e + c * matrix.f), f: -(b * matrix.e + d * matrix.f) };
+}
+
+export function transformPoint(matrix: AffineMatrix, point: { x: number; y: number }) {
+  return {
+    x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+    y: matrix.b * point.x + matrix.d * point.y + matrix.f,
+  };
+}
+
+export function transformVector(matrix: AffineMatrix, vector: { x: number; y: number }) {
+  return {
+    x: matrix.a * vector.x + matrix.c * vector.y,
+    y: matrix.b * vector.x + matrix.d * vector.y,
+  };
+}
+
+export function layerLocalMatrix(layer: Layer, t: number, fps = DEFAULT_FPS): AffineMatrix {
+  const p = pose(layer, t, fps);
+  const cx = layer.x + layer.w / 2;
+  const cy = layer.y + layer.h / 2;
+  const radians = (p.rotate * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const scale = {
+    a: p.scale * cos,
+    b: p.scale * sin,
+    c: -p.scaleY * sin,
+    d: p.scaleY * cos,
+    e: 0,
+    f: 0,
+  };
+  const translate = (x: number, y: number): AffineMatrix => ({ ...IDENTITY_MATRIX, e: x, f: y });
+  return multiplyMatrices(
+    translate(p.dx, p.dy),
+    multiplyMatrices(translate(cx, cy), multiplyMatrices(scale, translate(-cx, -cy))),
+  );
+}
+
+function parentLayer(layer: Layer, layers: Layer[]): Layer | undefined {
+  return layer.parentId
+    ? layers.find((candidate) => candidate.id === layer.parentId && candidate.kind !== "group")
+    : undefined;
+}
+
+export function layerWorldMatrix(
+  layer: Layer,
+  layers: Layer[],
+  t: number,
+  fps = DEFAULT_FPS,
+): AffineMatrix {
+  const chain: Layer[] = [];
+  const visited = new Set<string>();
+  let current: Layer | undefined = layer;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    chain.push(current);
+    current = parentLayer(current, layers);
+  }
+  let matrix = { ...IDENTITY_MATRIX };
+  for (const item of chain.reverse()) {
+    matrix = multiplyMatrices(matrix, item.parentOffset ?? IDENTITY_MATRIX);
+    matrix = multiplyMatrices(matrix, layerLocalMatrix(item, t, fps));
+  }
+  return matrix;
+}
+
+/** Matrix that maps local pointer deltas into the layer’s parent coordinate space. */
+export function layerParentMatrix(
+  layer: Layer,
+  layers: Layer[],
+  t: number,
+  fps = DEFAULT_FPS,
+): AffineMatrix {
+  const parent = parentLayer(layer, layers);
+  return multiplyMatrices(
+    parent ? layerWorldMatrix(parent, layers, t, fps) : IDENTITY_MATRIX,
+    layer.parentOffset ?? IDENTITY_MATRIX,
+  );
+}
+
+export function svgWorldTransform(
+  layer: Layer,
+  layers: Layer[],
+  t: number,
+  fps = DEFAULT_FPS,
+): string {
+  const matrix = layerWorldMatrix(layer, layers, t, fps);
+  return `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`;
+}
+
+export function layerHasTransformAnimation(layer: Layer, layers: Layer[]): boolean {
+  const visited = new Set<string>();
+  let current: Layer | undefined = layer;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (
+      ["x", "y", "rotate", "scale", "scaleY"].some(
+        (prop) => current!.tracks[prop as PropKey].length > 0,
+      )
+    )
+      return true;
+    current = parentLayer(current, layers);
+  }
+  return false;
+}
+
+export function layerIsLocked(layer: Layer, layers: Layer[]): boolean {
+  if (layer.locked) return true;
+  let group = layer.groupId
+    ? layers.find((item) => item.id === layer.groupId && item.kind === "group")
+    : undefined;
+  const visited = new Set<string>();
+  while (group && !visited.has(group.id)) {
+    if (group.locked) return true;
+    visited.add(group.id);
+    group = group.groupId
+      ? layers.find((item) => item.id === group!.groupId && item.kind === "group")
+      : undefined;
+  }
+  return false;
+}
+
+export function layerIsVisible(layer: Layer, layers: Layer[]): boolean {
+  if (!layer.visible) return false;
+  let group = layer.groupId
+    ? layers.find((item) => item.id === layer.groupId && item.kind === "group")
+    : undefined;
+  const visited = new Set<string>();
+  while (group && !visited.has(group.id)) {
+    if (!group.visible) return false;
+    visited.add(group.id);
+    group = group.groupId
+      ? layers.find((item) => item.id === group!.groupId && item.kind === "group")
+      : undefined;
+  }
+  return true;
+}
+
+export function layerIsSoloVisible(layer: Layer, layers: Layer[]): boolean {
+  if (!layers.some((item) => item.solo)) return true;
+  if (layer.solo) return true;
+  let group = layer.groupId
+    ? layers.find((item) => item.id === layer.groupId && item.kind === "group")
+    : undefined;
+  const visited = new Set<string>();
+  while (group && !visited.has(group.id)) {
+    if (group.solo) return true;
+    visited.add(group.id);
+    group = group.groupId
+      ? layers.find((item) => item.id === group!.groupId && item.kind === "group")
+      : undefined;
+  }
+  return false;
+}
+
 export function motionBlurVector(
   layer: Layer,
   t: number,
   duration: number,
   strength: number,
   fps = DEFAULT_FPS,
+  layers: Layer[] = [layer],
 ): { x: number; y: number } {
   if (strength <= 0 || duration <= 0) return { x: 0, y: 0 };
   const sampleOffset = 0.5 / fps;
@@ -418,8 +669,6 @@ export function motionBlurVector(
   const toTime = Math.min(duration, t + sampleOffset);
   if (toTime - fromTime <= 1e-6) return { x: 0, y: 0 };
 
-  const centerX = layer.x + layer.w / 2;
-  const centerY = layer.y + layer.h / 2;
   const corners = [
     [layer.x, layer.y],
     [layer.x + layer.w, layer.y],
@@ -427,18 +676,8 @@ export function motionBlurVector(
     [layer.x + layer.w, layer.y + layer.h],
   ] as const;
   const pointsAt = (time: number) => {
-    const current = pose(layer, time, fps);
-    const angle = (current.rotate * Math.PI) / 180;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return corners.map(([x, y]) => {
-      const scaledX = (x - centerX) * current.scale;
-      const scaledY = (y - centerY) * current.scaleY;
-      return {
-        x: centerX + current.dx + scaledX * cos - scaledY * sin,
-        y: centerY + current.dy + scaledX * sin + scaledY * cos,
-      };
-    });
+    const matrix = layerWorldMatrix(layer, layers, time, fps);
+    return corners.map(([x, y]) => transformPoint(matrix, { x, y }));
   };
   const from = pointsAt(fromTime);
   const to = pointsAt(toTime);
@@ -491,8 +730,12 @@ export function vectorPathData(points: VectorPathPoint[], closed = false): strin
   return commands.join(" ");
 }
 
-export function layerPathData(layer: Layer): string {
-  const points = (layer.path ?? []).map((point) => ({
+export function layerPathData(
+  layer: Layer,
+  sourcePoints: VectorPathPoint[] = layer.path ?? [],
+  closed = layer.closed ?? false,
+): string {
+  const points = sourcePoints.map((point) => ({
     x: layer.x + point.x * layer.w,
     y: layer.y + point.y * layer.h,
     inX: layer.x + point.inX * layer.w,
@@ -500,7 +743,52 @@ export function layerPathData(layer: Layer): string {
     outX: layer.x + point.outX * layer.w,
     outY: layer.y + point.outY * layer.h,
   }));
-  return vectorPathData(points, layer.closed);
+  return vectorPathData(points, closed);
+}
+
+export function pathAt(
+  layer: Layer,
+  t: number,
+  fps = DEFAULT_FPS,
+): { points: VectorPathPoint[]; closed: boolean } {
+  const track = [...(layer.pathKeys ?? [])].sort((a, b) => a.t - b.t);
+  if (track.length === 0) return { points: layer.path ?? [], closed: layer.closed ?? false };
+  if (t <= track[0].t) return { points: track[0].points, closed: track[0].closed };
+  const last = track.at(-1)!;
+  if (t >= last.t) return { points: last.points, closed: last.closed };
+  for (let index = 0; index < track.length - 1; index++) {
+    const from = track[index];
+    const to = track[index + 1];
+    if (t < from.t || t >= to.t) continue;
+    if (
+      from.interp === "hold" ||
+      from.closed !== to.closed ||
+      from.points.length !== to.points.length
+    ) {
+      return { points: from.points, closed: from.closed };
+    }
+    const raw = (t - from.t) / Math.max(1e-8, to.t - from.t);
+    const amount =
+      from.interp === "ease"
+        ? raw * raw * (3 - 2 * raw)
+        : from.interp === "bezier"
+          ? bezierProgress(raw, from.bezier ?? DEFAULT_BEZIER)
+          : raw;
+    const points = from.points.map((point, pointIndex) => {
+      const next = to.points[pointIndex];
+      const blend = (a: number, b: number) => a + (b - a) * amount;
+      return {
+        x: blend(point.x, next.x),
+        y: blend(point.y, next.y),
+        inX: blend(point.inX, next.inX),
+        inY: blend(point.inY, next.inY),
+        outX: blend(point.outX, next.outX),
+        outY: blend(point.outY, next.outY),
+      };
+    });
+    return { points, closed: from.closed };
+  }
+  return { points: last.points, closed: last.closed };
 }
 
 export function starPathData(x: number, y: number, width: number, height: number): string {
@@ -526,7 +814,7 @@ export function makeLayer(kind: ShapeKind, x: number, y: number, n: number): Lay
       ? { w: 160, h: 40 }
       : kind === "circle"
         ? { w: 96, h: 96 }
-      : kind === "image"
+        : kind === "image"
           ? { w: 320, h: 180 }
           : { w: 140, h: 88 };
   const names: Record<ShapeKind, string> = {
@@ -537,6 +825,7 @@ export function makeLayer(kind: ShapeKind, x: number, y: number, n: number): Lay
     star: "五角星",
     path: "自由路径",
     image: "图片",
+    group: "图层组",
   };
   const fill = kind === "text" ? "#e7ebf2" : kind === "path" ? "none" : "#4c9fff";
   const stroke = "#e7ebf2";
@@ -548,7 +837,10 @@ export function makeLayer(kind: ShapeKind, x: number, y: number, n: number): Lay
     visible: true,
     scaleLinked: true,
     fill,
+    fillEnabled: true,
+    pathGrowth: kind === "path" ? { ...DEFAULT_PATH_GROWTH } : undefined,
     stroke,
+    strokeEnabled: true,
     strokeWidth,
     text: "金帧",
     fontSize: 28,
@@ -611,11 +903,7 @@ export function demoLayers(): Layer[] {
     layers.push(layer);
     return layer;
   };
-  const animate = (
-    layer: Layer,
-    prop: PropKey,
-    frames: Array<[number, number, Interp?]>,
-  ) => {
+  const animate = (layer: Layer, prop: PropKey, frames: Array<[number, number, Interp?]>) => {
     layer.armed[prop] = true;
     layer.tracks[prop] = frames.map(([time, value, interp = "ease"], index) =>
       key(`${layer.id}-${prop}-${index}`, time, value, interp),
@@ -651,106 +939,447 @@ export function demoLayers(): Layer[] {
   add("rect", "brand-bg", "午夜蓝背景", 960, 540, DEMO_WIDTH, DEMO_HEIGHT, ink, ink, 0);
 
   const halo = add("ellipse", "brand-halo", "中心光晕", 960, 536, 1460, 720, "#172536");
-  animate(halo, "opacity", [[0, 0], [0.9, 0.5], [2, 0.38], [DEMO_DURATION, 0.28]]);
-  animate(halo, "scale", [[0, 0.86], [1.2, 1], [DEMO_DURATION, 1.04, "linear"]]);
-  animate(halo, "scaleY", [[0, 0.86], [1.2, 1], [DEMO_DURATION, 1.04, "linear"]]);
+  animate(halo, "opacity", [
+    [0, 0],
+    [0.9, 0.5],
+    [2, 0.38],
+    [DEMO_DURATION, 0.28],
+  ]);
+  animate(halo, "scale", [
+    [0, 0.86],
+    [1.2, 1],
+    [DEMO_DURATION, 1.04, "linear"],
+  ]);
+  animate(halo, "scaleY", [
+    [0, 0.86],
+    [1.2, 1],
+    [DEMO_DURATION, 1.04, "linear"],
+  ]);
 
   const ghost = text("brand-ghost-k", "背景字标", "K", 960, 910, 750, 730, 680, "#1a2633", 700);
-  animate(ghost, "opacity", [[0, 0.02], [1.3, 0.26], [DEMO_DURATION, 0.17, "linear"]]);
-  animate(ghost, "scale", [[0, 1.12], [1.4, 1], [DEMO_DURATION, 1.03, "linear"]]);
-  animate(ghost, "scaleY", [[0, 1.12], [1.4, 1], [DEMO_DURATION, 1.03, "linear"]]);
+  animate(ghost, "opacity", [
+    [0, 0.02],
+    [1.3, 0.26],
+    [DEMO_DURATION, 0.17, "linear"],
+  ]);
+  animate(ghost, "scale", [
+    [0, 1.12],
+    [1.4, 1],
+    [DEMO_DURATION, 1.03, "linear"],
+  ]);
+  animate(ghost, "scaleY", [
+    [0, 1.12],
+    [1.4, 1],
+    [DEMO_DURATION, 1.03, "linear"],
+  ]);
 
-  const heroPanel = add("rect", "brand-panel", "品牌展示面板", 960, 538, 1350, 520, panel, "#243243", 1);
-  animate(heroPanel, "opacity", [[0, 0], [0.5, 0], [1.25, 0.86], [DEMO_DURATION, 0.68, "linear"]]);
-  animate(heroPanel, "scale", [[0, 0.92], [1.25, 1], [DEMO_DURATION, 1, "linear"]]);
-  animate(heroPanel, "scaleY", [[0, 0.92], [1.25, 1], [DEMO_DURATION, 1, "linear"]]);
+  const heroPanel = add(
+    "rect",
+    "brand-panel",
+    "品牌展示面板",
+    960,
+    538,
+    1350,
+    520,
+    panel,
+    "#243243",
+    1,
+  );
+  animate(heroPanel, "opacity", [
+    [0, 0],
+    [0.5, 0],
+    [1.25, 0.86],
+    [DEMO_DURATION, 0.68, "linear"],
+  ]);
+  animate(heroPanel, "scale", [
+    [0, 0.92],
+    [1.25, 1],
+    [DEMO_DURATION, 1, "linear"],
+  ]);
+  animate(heroPanel, "scaleY", [
+    [0, 0.92],
+    [1.25, 1],
+    [DEMO_DURATION, 1, "linear"],
+  ]);
 
-  const outerOrbit = add("ellipse", "brand-orbit-outer", "外环轨道", 960, 535, 1510, 720, "none", "#34506a", 2);
-  animate(outerOrbit, "opacity", [[0, 0], [0.85, 0.36], [1.5, 0.7], [DEMO_DURATION, 0.42, "linear"]]);
-  animate(outerOrbit, "rotate", [[0.18, -15], [1.4, 0], [DEMO_DURATION, 18, "linear"]]);
-  animate(outerOrbit, "scale", [[0.18, 0.94], [1.35, 1], [DEMO_DURATION, 1.025, "linear"]]);
-  animate(outerOrbit, "scaleY", [[0.18, 0.94], [1.35, 1], [DEMO_DURATION, 1.025, "linear"]]);
+  const outerOrbit = add(
+    "ellipse",
+    "brand-orbit-outer",
+    "外环轨道",
+    960,
+    535,
+    1510,
+    720,
+    "none",
+    "#34506a",
+    2,
+  );
+  animate(outerOrbit, "opacity", [
+    [0, 0],
+    [0.85, 0.36],
+    [1.5, 0.7],
+    [DEMO_DURATION, 0.42, "linear"],
+  ]);
+  animate(outerOrbit, "rotate", [
+    [0.18, -15],
+    [1.4, 0],
+    [DEMO_DURATION, 18, "linear"],
+  ]);
+  animate(outerOrbit, "scale", [
+    [0.18, 0.94],
+    [1.35, 1],
+    [DEMO_DURATION, 1.025, "linear"],
+  ]);
+  animate(outerOrbit, "scaleY", [
+    [0.18, 0.94],
+    [1.35, 1],
+    [DEMO_DURATION, 1.025, "linear"],
+  ]);
 
-  const innerOrbit = add("ellipse", "brand-orbit-inner", "金色内环", 960, 535, 1140, 442, "none", "#705824", 2);
-  animate(innerOrbit, "opacity", [[0.2, 0], [1.1, 0.42], [2, 0.28], [DEMO_DURATION, 0.22, "linear"]]);
-  animate(innerOrbit, "rotate", [[0.2, 15], [1.5, 0], [DEMO_DURATION, -22, "linear"]]);
+  const innerOrbit = add(
+    "ellipse",
+    "brand-orbit-inner",
+    "金色内环",
+    960,
+    535,
+    1140,
+    442,
+    "none",
+    "#705824",
+    2,
+  );
+  animate(innerOrbit, "opacity", [
+    [0.2, 0],
+    [1.1, 0.42],
+    [2, 0.28],
+    [DEMO_DURATION, 0.22, "linear"],
+  ]);
+  animate(innerOrbit, "rotate", [
+    [0.2, 15],
+    [1.5, 0],
+    [DEMO_DURATION, -22, "linear"],
+  ]);
 
   const frameTop = add("rect", "brand-frame-top", "顶边高光", 960, 280, 1200, 2, "#2b3b4c");
-  animate(frameTop, "opacity", [[0.45, 0], [1.15, 0.78], [DEMO_DURATION, 0.44, "linear"]]);
-  animate(frameTop, "scale", [[0.45, 0.02], [1.15, 1], [DEMO_DURATION, 0.92, "linear"]]);
+  animate(frameTop, "opacity", [
+    [0.45, 0],
+    [1.15, 0.78],
+    [DEMO_DURATION, 0.44, "linear"],
+  ]);
+  animate(frameTop, "scale", [
+    [0.45, 0.02],
+    [1.15, 1],
+    [DEMO_DURATION, 0.92, "linear"],
+  ]);
 
   const frameBottom = add("rect", "brand-frame-bottom", "底边高光", 960, 798, 1200, 2, "#2b3b4c");
-  animate(frameBottom, "opacity", [[0.75, 0], [1.4, 0.56], [DEMO_DURATION, 0.35, "linear"]]);
-  animate(frameBottom, "scale", [[0.75, 0.02], [1.4, 1], [DEMO_DURATION, 0.92, "linear"]]);
+  animate(frameBottom, "opacity", [
+    [0.75, 0],
+    [1.4, 0.56],
+    [DEMO_DURATION, 0.35, "linear"],
+  ]);
+  animate(frameBottom, "scale", [
+    [0.75, 0.02],
+    [1.4, 1],
+    [DEMO_DURATION, 0.92, "linear"],
+  ]);
 
-  const topLabel = text("brand-label-top", "品牌标识", "KAIRO  /  MOTION STUDIO", 450, 216, 470, 38, 24, blue, 600);
-  animate(topLabel, "opacity", [[0.2, 0], [0.7, 1], [DEMO_DURATION, 0.68, "linear"]]);
-  animate(topLabel, "x", [[0.2, -36], [0.8, 0]]);
-  const topMeta = text("brand-label-meta", "画面规格", "SVG  ·  VECTOR  ·  MOTION", 1480, 216, 460, 38, 22, muted, 500);
-  animate(topMeta, "opacity", [[0.55, 0], [1.15, 0.8], [DEMO_DURATION, 0.52, "linear"]]);
-  animate(topMeta, "x", [[0.55, 44], [1.2, 0]]);
+  const topLabel = text(
+    "brand-label-top",
+    "品牌标识",
+    "KAIRO  /  MOTION STUDIO",
+    450,
+    216,
+    470,
+    38,
+    24,
+    blue,
+    600,
+  );
+  animate(topLabel, "opacity", [
+    [0.2, 0],
+    [0.7, 1],
+    [DEMO_DURATION, 0.68, "linear"],
+  ]);
+  animate(topLabel, "x", [
+    [0.2, -36],
+    [0.8, 0],
+  ]);
+  const topMeta = text(
+    "brand-label-meta",
+    "画面规格",
+    "SVG  ·  VECTOR  ·  MOTION",
+    1480,
+    216,
+    460,
+    38,
+    22,
+    muted,
+    500,
+  );
+  animate(topMeta, "opacity", [
+    [0.55, 0],
+    [1.15, 0.8],
+    [DEMO_DURATION, 0.52, "linear"],
+  ]);
+  animate(topMeta, "x", [
+    [0.55, 44],
+    [1.2, 0],
+  ]);
 
   const kStem = add("rect", "brand-k-stem", "K 字标主干", 600, 508, 22, 174, goldLight);
-  animate(kStem, "opacity", [[0.24, 0], [0.56, 1], [DEMO_DURATION, 1, "linear"]]);
-  animate(kStem, "scale", [[0.24, 0.08], [0.62, 1]]);
-  animate(kStem, "scaleY", [[0.24, 0.58], [0.62, 1]]);
-  animate(kStem, "rotate", [[0.24, -8], [0.62, 0]]);
+  animate(kStem, "opacity", [
+    [0.24, 0],
+    [0.56, 1],
+    [DEMO_DURATION, 1, "linear"],
+  ]);
+  animate(kStem, "scale", [
+    [0.24, 0.08],
+    [0.62, 1],
+  ]);
+  animate(kStem, "scaleY", [
+    [0.24, 0.58],
+    [0.62, 1],
+  ]);
+  animate(kStem, "rotate", [
+    [0.24, -8],
+    [0.62, 0],
+  ]);
 
   const kUpper = add("rect", "brand-k-upper", "K 字标上臂", 662, 466, 122, 18, blue);
   kUpper.rest.rotate = -42;
-  animate(kUpper, "opacity", [[0.42, 0], [0.84, 1], [DEMO_DURATION, 1, "linear"]]);
-  animate(kUpper, "scale", [[0.42, 0.05], [0.9, 1]]);
-  animate(kUpper, "scaleY", [[0.42, 0.7], [0.9, 1]]);
-  animate(kUpper, "rotate", [[0.42, -82], [0.92, -42]]);
+  animate(kUpper, "opacity", [
+    [0.42, 0],
+    [0.84, 1],
+    [DEMO_DURATION, 1, "linear"],
+  ]);
+  animate(kUpper, "scale", [
+    [0.42, 0.05],
+    [0.9, 1],
+  ]);
+  animate(kUpper, "scaleY", [
+    [0.42, 0.7],
+    [0.9, 1],
+  ]);
+  animate(kUpper, "rotate", [
+    [0.42, -82],
+    [0.92, -42],
+  ]);
 
   const kLower = add("rect", "brand-k-lower", "K 字标下臂", 662, 550, 122, 18, gold);
   kLower.rest.rotate = 42;
-  animate(kLower, "opacity", [[0.55, 0], [0.98, 1], [DEMO_DURATION, 1, "linear"]]);
-  animate(kLower, "scale", [[0.55, 0.05], [1.02, 1]]);
-  animate(kLower, "scaleY", [[0.55, 0.7], [1.02, 1]]);
-  animate(kLower, "rotate", [[0.55, 82], [1.05, 42]]);
+  animate(kLower, "opacity", [
+    [0.55, 0],
+    [0.98, 1],
+    [DEMO_DURATION, 1, "linear"],
+  ]);
+  animate(kLower, "scale", [
+    [0.55, 0.05],
+    [1.02, 1],
+  ]);
+  animate(kLower, "scaleY", [
+    [0.55, 0.7],
+    [1.02, 1],
+  ]);
+  animate(kLower, "rotate", [
+    [0.55, 82],
+    [1.05, 42],
+  ]);
 
   const verticalDivider = add("rect", "brand-divider", "字标分隔线", 760, 510, 2, 154, "#35475a");
-  animate(verticalDivider, "opacity", [[0.72, 0], [1.12, 0.9], [DEMO_DURATION, 0.58, "linear"]]);
-  animate(verticalDivider, "scaleY", [[0.72, 0.05], [1.12, 1]]);
+  animate(verticalDivider, "opacity", [
+    [0.72, 0],
+    [1.12, 0.9],
+    [DEMO_DURATION, 0.58, "linear"],
+  ]);
+  animate(verticalDivider, "scaleY", [
+    [0.72, 0.05],
+    [1.12, 1],
+  ]);
 
   const sweep = add("rect", "brand-energy-sweep", "品牌能量扫光", 960, 536, 920, 4, goldLight);
-  animate(sweep, "opacity", [[0.45, 0], [0.72, 0.96], [1.18, 0]]);
-  animate(sweep, "x", [[0.45, -760], [1.18, 760]]);
-  animate(sweep, "scale", [[0.45, 0.55], [0.72, 1], [1.18, 0.35]]);
+  animate(sweep, "opacity", [
+    [0.45, 0],
+    [0.72, 0.96],
+    [1.18, 0],
+  ]);
+  animate(sweep, "x", [
+    [0.45, -760],
+    [1.18, 760],
+  ]);
+  animate(sweep, "scale", [
+    [0.45, 0.55],
+    [0.72, 1],
+    [1.18, 0.35],
+  ]);
 
-  const wordmark = text("brand-wordmark", "金帧品牌字标", "金帧", 1190, 468, 760, 180, 150, white, 700);
-  animate(wordmark, "opacity", [[0.62, 0], [0.98, 1], [1.22, 1], [DEMO_DURATION, 0.96, "linear"]]);
-  animate(wordmark, "x", [[0.62, 82], [1.26, 0]]);
-  animate(wordmark, "scale", [[0.62, 0.92], [1.3, 1]]);
-  animate(wordmark, "scaleY", [[0.62, 0.92], [1.3, 1]]);
-  animate(wordmark, "fill", [[1.28, colorToNumber(white)], [4.9, colorToNumber(goldLight)]]);
+  const wordmark = text(
+    "brand-wordmark",
+    "金帧品牌字标",
+    "金帧",
+    1190,
+    468,
+    760,
+    180,
+    150,
+    white,
+    700,
+  );
+  animate(wordmark, "opacity", [
+    [0.62, 0],
+    [0.98, 1],
+    [1.22, 1],
+    [DEMO_DURATION, 0.96, "linear"],
+  ]);
+  animate(wordmark, "x", [
+    [0.62, 82],
+    [1.26, 0],
+  ]);
+  animate(wordmark, "scale", [
+    [0.62, 0.92],
+    [1.3, 1],
+  ]);
+  animate(wordmark, "scaleY", [
+    [0.62, 0.92],
+    [1.3, 1],
+  ]);
+  animate(wordmark, "fill", [
+    [1.28, colorToNumber(white)],
+    [4.9, colorToNumber(goldLight)],
+  ]);
 
-  const roman = text("brand-roman", "Kairo 英文标识", "K A I R O", 1190, 584, 760, 84, 58, goldLight, 500);
-  animate(roman, "opacity", [[0.84, 0], [1.36, 0.96], [DEMO_DURATION, 0.74, "linear"]]);
-  animate(roman, "y", [[0.84, 32], [1.42, 0]]);
-  animate(roman, "scale", [[0.84, 0.86], [1.42, 1]]);
-  animate(roman, "scaleY", [[0.84, 0.86], [1.42, 1]]);
+  const roman = text(
+    "brand-roman",
+    "Kairo 英文标识",
+    "K A I R O",
+    1190,
+    584,
+    760,
+    84,
+    58,
+    goldLight,
+    500,
+  );
+  animate(roman, "opacity", [
+    [0.84, 0],
+    [1.36, 0.96],
+    [DEMO_DURATION, 0.74, "linear"],
+  ]);
+  animate(roman, "y", [
+    [0.84, 32],
+    [1.42, 0],
+  ]);
+  animate(roman, "scale", [
+    [0.84, 0.86],
+    [1.42, 1],
+  ]);
+  animate(roman, "scaleY", [
+    [0.84, 0.86],
+    [1.42, 1],
+  ]);
 
-  const taglineLead = text("brand-tagline-lead", "广告语前句", "让创意，", 806, 714, 430, 82, 62, white, 500);
-  animate(taglineLead, "opacity", [[1.52, 0], [2.05, 1], [DEMO_DURATION, 0.92, "linear"]]);
-  animate(taglineLead, "x", [[1.52, -38], [2.08, 0]]);
-  const taglineEmphasis = text("brand-tagline-emphasis", "广告语重点", "逐帧成光", 1134, 714, 520, 82, 66, goldLight, 700);
-  animate(taglineEmphasis, "opacity", [[1.78, 0], [2.26, 1], [DEMO_DURATION, 0.92, "linear"]]);
-  animate(taglineEmphasis, "x", [[1.78, 44], [2.3, 0]]);
-  animate(taglineEmphasis, "scale", [[1.78, 0.88], [2.3, 1]]);
-  animate(taglineEmphasis, "scaleY", [[1.78, 0.88], [2.3, 1]]);
+  const taglineLead = text(
+    "brand-tagline-lead",
+    "广告语前句",
+    "让创意，",
+    806,
+    714,
+    430,
+    82,
+    62,
+    white,
+    500,
+  );
+  animate(taglineLead, "opacity", [
+    [1.52, 0],
+    [2.05, 1],
+    [DEMO_DURATION, 0.92, "linear"],
+  ]);
+  animate(taglineLead, "x", [
+    [1.52, -38],
+    [2.08, 0],
+  ]);
+  const taglineEmphasis = text(
+    "brand-tagline-emphasis",
+    "广告语重点",
+    "逐帧成光",
+    1134,
+    714,
+    520,
+    82,
+    66,
+    goldLight,
+    700,
+  );
+  animate(taglineEmphasis, "opacity", [
+    [1.78, 0],
+    [2.26, 1],
+    [DEMO_DURATION, 0.92, "linear"],
+  ]);
+  animate(taglineEmphasis, "x", [
+    [1.78, 44],
+    [2.3, 0],
+  ]);
+  animate(taglineEmphasis, "scale", [
+    [1.78, 0.88],
+    [2.3, 1],
+  ]);
+  animate(taglineEmphasis, "scaleY", [
+    [1.78, 0.88],
+    [2.3, 1],
+  ]);
 
-  const descriptor = text("brand-descriptor", "产品说明", "从一个关键帧，到一段完整动画", 960, 804, 960, 48, 28, muted, 400);
-  animate(descriptor, "opacity", [[2.12, 0], [2.7, 0.88], [DEMO_DURATION, 0.7, "linear"]]);
-  animate(descriptor, "y", [[2.12, 22], [2.72, 0]]);
+  const descriptor = text(
+    "brand-descriptor",
+    "产品说明",
+    "从一个关键帧，到一段完整动画",
+    960,
+    804,
+    960,
+    48,
+    28,
+    muted,
+    400,
+  );
+  animate(descriptor, "opacity", [
+    [2.12, 0],
+    [2.7, 0.88],
+    [DEMO_DURATION, 0.7, "linear"],
+  ]);
+  animate(descriptor, "y", [
+    [2.12, 22],
+    [2.72, 0],
+  ]);
 
   const underline = add("rect", "brand-underline", "广告语强调线", 960, 862, 620, 3, gold);
-  animate(underline, "opacity", [[2.1, 0], [2.72, 0.9], [DEMO_DURATION, 0.46, "linear"]]);
-  animate(underline, "scale", [[2.1, 0.015], [2.72, 1], [DEMO_DURATION, 0.74, "linear"]]);
+  animate(underline, "opacity", [
+    [2.1, 0],
+    [2.72, 0.9],
+    [DEMO_DURATION, 0.46, "linear"],
+  ]);
+  animate(underline, "scale", [
+    [2.1, 0.015],
+    [2.72, 1],
+    [DEMO_DURATION, 0.74, "linear"],
+  ]);
 
-  const footer = text("brand-footer", "品牌页脚", "KAIRO  ·  DESIGN IN MOTION", 960, 944, 760, 38, 22, "#728091", 500);
-  animate(footer, "opacity", [[2.44, 0], [3.05, 0.72], [DEMO_DURATION, 0.58, "linear"]]);
+  const footer = text(
+    "brand-footer",
+    "品牌页脚",
+    "KAIRO  ·  DESIGN IN MOTION",
+    960,
+    944,
+    760,
+    38,
+    22,
+    "#728091",
+    500,
+  );
+  animate(footer, "opacity", [
+    [2.44, 0],
+    [3.05, 0.72],
+    [DEMO_DURATION, 0.58, "linear"],
+  ]);
 
   const sparkleSpecs = [
     { id: "spark-a", x: 408, y: 418, dx: 146, dy: 36, size: 14, color: goldLight, start: 0.42 },
@@ -761,20 +1390,71 @@ export function demoLayers(): Layer[] {
     { id: "spark-f", x: 1280, y: 760, dx: -88, dy: -82, size: 11, color: blue, start: 1.16 },
   ];
   for (const [index, spec] of sparkleSpecs.entries()) {
-    const spark = add("circle", spec.id, `能量粒子 ${index + 1}`, spec.x, spec.y, spec.size, spec.size, spec.color);
-    animate(spark, "opacity", [[spec.start, 0], [spec.start + 0.24, 1], [spec.start + 0.62, 0.12]]);
-    animate(spark, "x", [[spec.start, spec.dx], [spec.start + 0.58, 0]]);
-    animate(spark, "y", [[spec.start, spec.dy], [spec.start + 0.58, 0]]);
-    animate(spark, "scale", [[spec.start, 0.1], [spec.start + 0.3, 1.25], [spec.start + 0.62, 0.2]]);
-    animate(spark, "scaleY", [[spec.start, 0.1], [spec.start + 0.3, 1.25], [spec.start + 0.62, 0.2]]);
+    const spark = add(
+      "circle",
+      spec.id,
+      `能量粒子 ${index + 1}`,
+      spec.x,
+      spec.y,
+      spec.size,
+      spec.size,
+      spec.color,
+    );
+    animate(spark, "opacity", [
+      [spec.start, 0],
+      [spec.start + 0.24, 1],
+      [spec.start + 0.62, 0.12],
+    ]);
+    animate(spark, "x", [
+      [spec.start, spec.dx],
+      [spec.start + 0.58, 0],
+    ]);
+    animate(spark, "y", [
+      [spec.start, spec.dy],
+      [spec.start + 0.58, 0],
+    ]);
+    animate(spark, "scale", [
+      [spec.start, 0.1],
+      [spec.start + 0.3, 1.25],
+      [spec.start + 0.62, 0.2],
+    ]);
+    animate(spark, "scaleY", [
+      [spec.start, 0.1],
+      [spec.start + 0.3, 1.25],
+      [spec.start + 0.62, 0.2],
+    ]);
   }
 
   const horizonBeam = add("rect", "brand-horizon-beam", "底部蓝色光带", 960, 890, 940, 3, blue);
-  animate(horizonBeam, "opacity", [[2.16, 0], [2.72, 0.72], [3.3, 0.24], [DEMO_DURATION, 0.18, "linear"]]);
-  animate(horizonBeam, "scale", [[2.16, 0.02], [2.82, 1], [DEMO_DURATION, 0.82, "linear"]]);
+  animate(horizonBeam, "opacity", [
+    [2.16, 0],
+    [2.72, 0.72],
+    [3.3, 0.24],
+    [DEMO_DURATION, 0.18, "linear"],
+  ]);
+  animate(horizonBeam, "scale", [
+    [2.16, 0.02],
+    [2.82, 1],
+    [DEMO_DURATION, 0.82, "linear"],
+  ]);
 
-  const cornerLabel = text("brand-corner-label", "签名", "FRAME YOUR IDEAS", 350, 942, 360, 34, 18, "#66778a", 500);
-  animate(cornerLabel, "opacity", [[2.62, 0], [3.22, 0.74], [DEMO_DURATION, 0.54, "linear"]]);
+  const cornerLabel = text(
+    "brand-corner-label",
+    "签名",
+    "FRAME YOUR IDEAS",
+    350,
+    942,
+    360,
+    34,
+    18,
+    "#66778a",
+    500,
+  );
+  animate(cornerLabel, "opacity", [
+    [2.62, 0],
+    [3.22, 0.74],
+    [DEMO_DURATION, 0.54, "linear"],
+  ]);
 
   for (const layer of layers) {
     layer.rest = {
@@ -801,8 +1481,10 @@ function clipAnimationCss(layer: Layer, duration: number, fps: number): string {
   const inPercent = Math.min(100, Math.max(0, (inPoint / duration) * 100));
   const outPercent = Math.min(100, Math.max(0, (outPoint / duration) * 100));
   const frames = [`0% { visibility: ${inPoint <= 0 ? "visible" : "hidden"}; }`];
-  if (inPoint > 0 && inPoint < duration) frames.push(`${inPercent.toFixed(4)}% { visibility: visible; }`);
-  if (outPoint > 0 && outPoint < duration) frames.push(`${outPercent.toFixed(4)}% { visibility: hidden; }`);
+  if (inPoint > 0 && inPoint < duration)
+    frames.push(`${inPercent.toFixed(4)}% { visibility: visible; }`);
+  if (outPoint > 0 && outPoint < duration)
+    frames.push(`${outPercent.toFixed(4)}% { visibility: hidden; }`);
   frames.push(`100% { visibility: ${outPoint >= duration ? "visible" : "hidden"}; }`);
   return `@keyframes ${layer.id}_clip {\n${frames.map((frame) => `  ${frame}\n`).join("")}}\n`;
 }
@@ -826,16 +1508,20 @@ export function buildExport(
   const filters: string[] = [];
   const motionFilters = new Map<string, string>();
   for (const layer of layers) {
-    if (!layer.visible) continue;
+    if (layer.kind === "group" || !layerIsVisible(layer, layers)) continue;
     const { inPoint, outPoint } = layerClipRange(layer, duration, fps);
     const clipped = inPoint > 0 || outPoint < duration;
-    const animated = PROPS.some((p) => layer.tracks[p].length > 0);
+    const animated =
+      PROPS.some((p) => layer.tracks[p].length > 0) ||
+      layerHasTransformAnimation(layer, layers) ||
+      Boolean(layer.pathKeys?.length) ||
+      (layer.kind === "path" && Boolean(layer.pathGrowth?.enabled));
     if (motionBlur.enabled && animated && layer.visible) {
       const sampleTimes: number[] = [];
       for (let t = 0; t < duration; t += step) sampleTimes.push(t);
       if (sampleTimes.length === 0 || sampleTimes.at(-1)! < duration) sampleTimes.push(duration);
       const vectors = sampleTimes.map((t) =>
-        motionBlurVector(layer, t, duration, motionBlur.strength, fps),
+        motionBlurVector(layer, t, duration, motionBlur.strength, fps, layers),
       );
       if (vectors.some((vector) => vector.x > 0.15 || vector.y > 0.15)) {
         const id = `motion-blur-${layer.id}`;
@@ -857,7 +1543,7 @@ export function buildExport(
         css += clipAnimationCss(layer, duration, fps);
         css += `#${layer.id} { animation: ${layer.id}_clip ${duration}s linear infinite; }\n`;
       }
-      parts.push(layerMarkup(layer, 0, false, motionFilters.get(layer.id), fps));
+      parts.push(layerMarkup(layer, 0, false, motionFilters.get(layer.id), fps, layers, duration));
       continue;
     }
     let body = "";
@@ -866,21 +1552,31 @@ export function buildExport(
       const clamped = Math.min(t, duration);
       const pct = duration <= 0 ? 0 : (clamped / duration) * 100;
       const p = pose(layer, clamped, fps);
-      const cx = layer.x + layer.w / 2;
-      const cy = layer.y + layer.h / 2;
+      const matrix = layerWorldMatrix(layer, layers, clamped, fps);
+      const pathGrowthEnabled = layer.kind === "path" && Boolean(layer.pathGrowth?.enabled);
+      const pathGrowth = pathGrowthProgress(layer, clamped, duration, fps);
       const fill =
-        layer.fill === "none" && layer.tracks.fill.length === 0
+        (pathGrowthEnabled && pathGrowth < 1) || layer.fillEnabled === false
           ? "none"
-          : numberToColor(displayed(layer, "fill", clamped, fps));
-      const stroke = numberToColor(displayed(layer, "stroke", clamped, fps));
-      const strokeWidth = displayed(layer, "strokeWidth", clamped, fps);
-      body += `    ${pct.toFixed(2)}% { opacity: ${p.opacity}; fill: ${fill}; stroke: ${stroke}; stroke-width: ${strokeWidth}; transform: translate(${p.dx}px, ${p.dy}px) translate(${cx}px, ${cy}px) rotate(${p.rotate}deg) scale(${p.scale}, ${p.scaleY}) translate(${-cx}px, ${-cy}px); }\n`;
+          : layer.fill === "none" && layer.tracks.fill.length === 0
+            ? "none"
+            : numberToColor(displayed(layer, "fill", clamped, fps));
+      const stroke =
+        layer.strokeEnabled === false
+          ? "none"
+          : numberToColor(displayed(layer, "stroke", clamped, fps));
+      const strokeWidth =
+        layer.strokeEnabled === false ? 0 : displayed(layer, "strokeWidth", clamped, fps);
+      const growthStyles = pathGrowthEnabled
+        ? `; stroke-dasharray: ${pathGrowthDashArray(pathGrowth, layer.pathGrowth?.direction ?? "forward")}; stroke-opacity: ${pathGrowth <= 0 ? 0 : 1}`
+        : "";
+      body += `    ${pct.toFixed(2)}% { opacity: ${p.opacity}; fill: ${fill}; stroke: ${stroke}; stroke-width: ${strokeWidth}${growthStyles}; transform: matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f}); }\n`;
     }
     css += `@keyframes ${layer.id}_anim {\n${body}}\n`;
     if (clipped) css += clipAnimationCss(layer, duration, fps);
     const clipAnimation = clipped ? `, ${layer.id}_clip ${duration}s linear infinite` : "";
-    css += `#${layer.id} { animation: ${layer.id}_anim ${duration}s linear infinite${clipAnimation}; transform-box: view-box; }\n`;
-    parts.push(layerMarkup(layer, 0, true, motionFilters.get(layer.id), fps));
+    css += `#${layer.id} { animation: ${layer.id}_anim ${duration}s linear infinite${clipAnimation}; transform-box: view-box; transform-origin: 0 0; }\n`;
+    parts.push(layerMarkup(layer, 0, true, motionFilters.get(layer.id), fps, layers, duration));
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.exportWidth}" height="${dimensions.exportHeight}" viewBox="0 0 ${dimensions.projectWidth} ${dimensions.projectHeight}">
@@ -907,10 +1603,15 @@ export function buildFrameExport(
   const filters: string[] = [];
   const parts: string[] = [];
   for (const layer of layers) {
-    if (!layer.visible || !layerIsActive(layer, time, duration, fps)) continue;
+    if (
+      layer.kind === "group" ||
+      !layerIsVisible(layer, layers) ||
+      !layerIsActive(layer, time, duration, fps)
+    )
+      continue;
     let filterId: string | undefined;
     if (motionBlur.enabled) {
-      const vector = motionBlurVector(layer, time, duration, motionBlur.strength, fps);
+      const vector = motionBlurVector(layer, time, duration, motionBlur.strength, fps, layers);
       if (vector.x > 0.1 || vector.y > 0.1) {
         filterId = `motion-blur-frame-${layer.id}`;
         const region = motionBlurFilterRegion(layer, vector);
@@ -919,7 +1620,7 @@ export function buildFrameExport(
         );
       }
     }
-    parts.push(layerMarkup(layer, time, false, filterId, fps));
+    parts.push(layerMarkup(layer, time, false, filterId, fps, layers, duration));
   }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${dimensions.exportWidth}" height="${dimensions.exportHeight}" viewBox="0 0 ${dimensions.projectWidth} ${dimensions.projectHeight}">
@@ -935,17 +1636,25 @@ function layerMarkup(
   animated: boolean,
   filterId?: string,
   fps = DEFAULT_FPS,
+  layers: Layer[] = [layer],
+  duration = 0,
 ): string {
+  if (layer.kind === "group") return "";
   const p = pose(layer, t, fps);
+  const pathGrowthEnabled = layer.kind === "path" && Boolean(layer.pathGrowth?.enabled);
+  const pathGrowth = pathGrowthProgress(layer, t, duration, fps);
   const fill =
-    layer.fill === "none" && layer.tracks.fill.length === 0
+    (pathGrowthEnabled && pathGrowth < 1) || layer.fillEnabled === false
       ? "none"
-      : numberToColor(displayed(layer, "fill", t, fps));
-  const stroke = numberToColor(displayed(layer, "stroke", t, fps));
-  const strokeWidth = displayed(layer, "strokeWidth", t, fps);
+      : layer.fill === "none" && layer.tracks.fill.length === 0
+        ? "none"
+        : numberToColor(displayed(layer, "fill", t, fps));
+  const stroke =
+    layer.strokeEnabled === false ? "none" : numberToColor(displayed(layer, "stroke", t, fps));
+  const strokeWidth = layer.strokeEnabled === false ? 0 : displayed(layer, "strokeWidth", t, fps);
   const common = animated
     ? `id="${layer.id}"${filterId ? ` filter="url(#${filterId})"` : ""}`
-    : `opacity="${p.opacity}" transform="${svgTransform(layer, t, fps)}"${filterId ? ` filter="url(#${filterId})"` : ""}`;
+    : `opacity="${p.opacity}" transform="${svgWorldTransform(layer, layers, t, fps)}"${filterId ? ` filter="url(#${filterId})"` : ""}`;
   if (layer.kind === "image") {
     return `<image ${common} x="${layer.x}" y="${layer.y}" width="${layer.w}" height="${layer.h}" href="${escapeXml(layer.imageSrc ?? "")}" preserveAspectRatio="none"/>`;
   }
@@ -960,7 +1669,30 @@ function layerMarkup(
     return `<path ${common} d="${starPathData(layer.x, layer.y, layer.w, layer.h)}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linejoin="round"/>`;
   }
   if (layer.kind === "path") {
-    return `<path ${common} d="${layerPathData(layer)}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const current = pathAt(layer, t, fps);
+    const d = layerPathData(layer, current.points, current.closed);
+    const growthAttrs = pathGrowthEnabled
+      ? ` pathLength="1" stroke-dasharray="${pathGrowthDashArray(pathGrowth, layer.pathGrowth?.direction ?? "forward")}" stroke-opacity="${pathGrowth <= 0 ? 0 : 1}"`
+      : "";
+    if (!animated || !layer.pathKeys?.length) {
+      return `<path ${common} d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"${growthAttrs} stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    const frames = Math.max(1, Math.ceil(fps * duration));
+    const times = Array.from({ length: frames + 1 }, (_, index) => Math.min(duration, index / fps));
+    const values = times.map((frameTime) => {
+      const path = pathAt(layer, frameTime, fps);
+      return layerPathData(layer, path.points, path.closed);
+    });
+    const keyTimes = times.map((frameTime) =>
+      (duration <= 0 ? 0 : frameTime / duration).toFixed(5),
+    );
+    const topologyChanges = layer.pathKeys.some(
+      (key, index, keys) =>
+        index > 0 &&
+        (key.points.length !== keys[index - 1].points.length ||
+          key.closed !== keys[index - 1].closed),
+    );
+    return `<path ${common} d="${values[0]}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"${growthAttrs} stroke-linejoin="round" stroke-linecap="round"><animate attributeName="d" values="${values.join(";")}" keyTimes="${keyTimes.join(";")}"${topologyChanges ? ' calcMode="discrete"' : ""} dur="${Math.max(duration, 1 / fps)}s" repeatCount="indefinite"/></path>`;
   }
   if (layer.kind === "text") {
     return `<text ${common} x="${layer.x + layer.w / 2}" y="${layer.y + layer.h / 2}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" font-size="${layer.fontSize}" font-weight="${layer.fontWeight ?? 600}" font-family="${escapeXml(layer.fontFamily ?? DEFAULT_FONT_FAMILY)}" text-anchor="middle" dominant-baseline="middle">${escapeXml(layer.text)}</text>`;

@@ -11,15 +11,26 @@ import { Maximize2, Minus, Plus } from "lucide-react";
 import {
   displayed,
   DEFAULT_FONT_FAMILY,
+  invertMatrix,
   layerIsActive,
+  layerIsLocked,
+  layerIsSoloVisible,
+  layerIsVisible,
+  layerParentMatrix,
+  layerWorldMatrix,
   keyNear,
   layerPathData,
   motionBlurFilterRegion,
   motionBlurVector,
   numberToColor,
+  pathAt,
+  pathGrowthDashArray,
+  pathGrowthProgress,
   pose,
   starPathData,
-  svgTransform,
+  svgWorldTransform,
+  transformPoint,
+  transformVector,
   vectorPathData,
   type DrawShapeKind,
   type Layer,
@@ -151,13 +162,30 @@ function pathPoint(x: number, y: number): VectorPathPoint {
   return { x, y, inX: x, inY: y, outX: x, outY: y };
 }
 
-function ShapeBody({ layer, time, fps }: { layer: Layer; time: number; fps: number }) {
-  const fill =
-    layer.fill === "none" && layer.tracks.fill.length === 0
+function ShapeBody({
+  layer,
+  time,
+  duration,
+  fps,
+}: {
+  layer: Layer;
+  time: number;
+  duration: number;
+  fps: number;
+}) {
+  const baseFill =
+    layer.fillEnabled === false
       ? "none"
-      : numberToColor(displayed(layer, "fill", time, fps));
-  const stroke = numberToColor(displayed(layer, "stroke", time, fps));
-  const strokeWidth = displayed(layer, "strokeWidth", time, fps);
+      : layer.fill === "none" && layer.tracks.fill.length === 0
+        ? "none"
+        : numberToColor(displayed(layer, "fill", time, fps));
+  const pathGrowthEnabled = layer.kind === "path" && Boolean(layer.pathGrowth?.enabled);
+  const pathGrowth = pathGrowthProgress(layer, time, duration, fps);
+  const fill = pathGrowthEnabled && pathGrowth < 1 ? "none" : baseFill;
+  const stroke =
+    layer.strokeEnabled === false ? "none" : numberToColor(displayed(layer, "stroke", time, fps));
+  const strokeWidth =
+    layer.strokeEnabled === false ? 0 : displayed(layer, "strokeWidth", time, fps);
   if (layer.kind === "image") {
     return (
       <image
@@ -208,12 +236,20 @@ function ShapeBody({ layer, time, fps }: { layer: Layer; time: number; fps: numb
     );
   }
   if (layer.kind === "path") {
+    const currentPath = pathAt(layer, time, fps);
     return (
       <path
-        d={layerPathData(layer)}
+        d={layerPathData(layer, currentPath.points, currentPath.closed)}
         fill={fill}
         stroke={stroke}
         strokeWidth={strokeWidth}
+        pathLength={pathGrowthEnabled ? 1 : undefined}
+        strokeDasharray={
+          pathGrowthEnabled
+            ? pathGrowthDashArray(pathGrowth, layer.pathGrowth?.direction ?? "forward")
+            : undefined
+        }
+        strokeOpacity={pathGrowthEnabled && pathGrowth <= 0 ? 0 : undefined}
         strokeLinejoin="round"
         strokeLinecap="round"
       />
@@ -339,7 +375,7 @@ export function Stage({
       const element = target instanceof HTMLElement ? target : null;
       return Boolean(
         element?.isContentEditable ||
-          (element && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(element.tagName)),
+        (element && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(element.tagName)),
       );
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -348,7 +384,8 @@ export function Stage({
         event.repeat ||
         isEditableTarget(event.target) ||
         !stageRef.current?.matches(":hover")
-      ) return;
+      )
+        return;
       event.preventDefault();
       spacePanRef.current = true;
       setSpacePan(true);
@@ -377,35 +414,38 @@ export function Stage({
     setCamera(fitCamera);
   }, [projectWidth, projectHeight]);
 
-  const zoomAt = useCallback((nextZoom: number, clientX?: number, clientY?: number) => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const current = cameraRef.current;
-    const zoom = Math.min(8, Math.max(0.1, nextZoom));
-    const rect = svg.getBoundingClientRect();
-    const oldWidth = projectWidth / current.zoom;
-    const oldHeight = projectHeight / current.zoom;
-    const scale = Math.min(rect.width / oldWidth, rect.height / oldHeight);
-    const shownWidth = oldWidth * scale;
-    const shownHeight = oldHeight * scale;
-    const offsetX = rect.left + (rect.width - shownWidth) / 2;
-    const offsetY = rect.top + (rect.height - shownHeight) / 2;
-    const pointerX = clientX ?? rect.left + rect.width / 2;
-    const pointerY = clientY ?? rect.top + rect.height / 2;
-    const unitX = Math.min(1, Math.max(0, (pointerX - offsetX) / shownWidth));
-    const unitY = Math.min(1, Math.max(0, (pointerY - offsetY) / shownHeight));
-    const worldX = current.x + unitX * oldWidth;
-    const worldY = current.y + unitY * oldHeight;
-    const newWidth = projectWidth / zoom;
-    const newHeight = projectHeight / zoom;
-    const next = {
-      zoom,
-      x: worldX - unitX * newWidth,
-      y: worldY - unitY * newHeight,
-    };
-    cameraRef.current = next;
-    setCamera(next);
-  }, [projectWidth, projectHeight]);
+  const zoomAt = useCallback(
+    (nextZoom: number, clientX?: number, clientY?: number) => {
+      const svg = svgRef.current;
+      if (!svg) return;
+      const current = cameraRef.current;
+      const zoom = Math.min(8, Math.max(0.1, nextZoom));
+      const rect = svg.getBoundingClientRect();
+      const oldWidth = projectWidth / current.zoom;
+      const oldHeight = projectHeight / current.zoom;
+      const scale = Math.min(rect.width / oldWidth, rect.height / oldHeight);
+      const shownWidth = oldWidth * scale;
+      const shownHeight = oldHeight * scale;
+      const offsetX = rect.left + (rect.width - shownWidth) / 2;
+      const offsetY = rect.top + (rect.height - shownHeight) / 2;
+      const pointerX = clientX ?? rect.left + rect.width / 2;
+      const pointerY = clientY ?? rect.top + rect.height / 2;
+      const unitX = Math.min(1, Math.max(0, (pointerX - offsetX) / shownWidth));
+      const unitY = Math.min(1, Math.max(0, (pointerY - offsetY) / shownHeight));
+      const worldX = current.x + unitX * oldWidth;
+      const worldY = current.y + unitY * oldHeight;
+      const newWidth = projectWidth / zoom;
+      const newHeight = projectHeight / zoom;
+      const next = {
+        zoom,
+        x: worldX - unitX * newWidth,
+        y: worldY - unitY * newHeight,
+      };
+      cameraRef.current = next;
+      setCamera(next);
+    },
+    [projectWidth, projectHeight],
+  );
 
   const fitCamera = () => {
     const next = { zoom: 1, x: 0, y: 0 };
@@ -418,7 +458,11 @@ export function Stage({
     if (!stage) return;
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      zoomAt(cameraRef.current.zoom * Math.exp(-event.deltaY * 0.0015), event.clientX, event.clientY);
+      zoomAt(
+        cameraRef.current.zoom * Math.exp(-event.deltaY * 0.0015),
+        event.clientX,
+        event.clientY,
+      );
     };
     stage.addEventListener("wheel", onWheel, { passive: false });
     return () => stage.removeEventListener("wheel", onWheel);
@@ -472,7 +516,8 @@ export function Stage({
     const onKeyDown = (event: KeyboardEvent) => {
       if (toolRef.current !== "pen") return;
       const target = event.target as HTMLElement;
-      if (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      if (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+        return;
       if (event.key === "Enter") {
         event.preventDefault();
         finishPenRef.current(false);
@@ -501,17 +546,20 @@ export function Stage({
 
   const motionPath = useMemo(() => {
     if (!selectedLayer) return null;
-    const times = [...new Set([...selectedLayer.tracks.x, ...selectedLayer.tracks.y].map((key) => key.t))].sort(
-      (a, b) => a - b,
-    );
+    const times = [
+      ...new Set([...selectedLayer.tracks.x, ...selectedLayer.tracks.y].map((key) => key.t)),
+    ].sort((a, b) => a - b);
     if (times.length === 0) return null;
-    const pointAt = (at: number) => ({
-      t: at,
-      x: displayed(selectedLayer, "x", at, fps) + selectedLayer.w / 2,
-      y: displayed(selectedLayer, "y", at, fps) + selectedLayer.h / 2,
-    });
+    const pointAt = (at: number) => {
+      const center = {
+        x: selectedLayer.x + selectedLayer.w / 2,
+        y: selectedLayer.y + selectedLayer.h / 2,
+      };
+      return { t: at, ...transformPoint(layerWorldMatrix(selectedLayer, layers, at, fps), center) };
+    };
     const keyframes = times.map(pointAt);
-    const keyAt = (at: number) => keyNear(selectedLayer.tracks.x, at, fps) ?? keyNear(selectedLayer.tracks.y, at, fps);
+    const keyAt = (at: number) =>
+      keyNear(selectedLayer.tracks.x, at, fps) ?? keyNear(selectedLayer.tracks.y, at, fps);
     const controls: MotionControl[] = times.slice(0, -1).flatMap((startTime, index) => {
       const endTime = times[index + 1];
       const startKey = keyAt(startTime);
@@ -519,17 +567,32 @@ export function Stage({
       if (!startKey || startKey.interp !== "bezier" || !endKey) return [];
       const start = pointAt(startTime);
       const end = pointAt(endTime);
-      const delta = { x: end.x - start.x, y: end.y - start.y };
-      const outOffset = startKey.motionOut ?? { x: delta.x / 3, y: delta.y / 3 };
-      const inOffset = endKey.motionIn ?? { x: -delta.x / 3, y: -delta.y / 3 };
-      return [{
-        start,
-        end,
-        out: { x: start.x + outOffset.x, y: start.y + outOffset.y },
-        in: { x: end.x + inOffset.x, y: end.y + inOffset.y },
-        outKeyId: startKey.id,
-        inKeyId: endKey.id,
-      }];
+      const localDelta = {
+        x:
+          displayed(selectedLayer, "x", endTime, fps) -
+          displayed(selectedLayer, "x", startTime, fps),
+        y:
+          displayed(selectedLayer, "y", endTime, fps) -
+          displayed(selectedLayer, "y", startTime, fps),
+      };
+      const outOffset = transformVector(
+        layerParentMatrix(selectedLayer, layers, startTime, fps),
+        startKey.motionOut ?? { x: localDelta.x / 3, y: localDelta.y / 3 },
+      );
+      const inOffset = transformVector(
+        layerParentMatrix(selectedLayer, layers, endTime, fps),
+        endKey.motionIn ?? { x: -localDelta.x / 3, y: -localDelta.y / 3 },
+      );
+      return [
+        {
+          start,
+          end,
+          out: { x: start.x + outOffset.x, y: start.y + outOffset.y },
+          in: { x: end.x + inOffset.x, y: end.y + inOffset.y },
+          outKeyId: startKey.id,
+          inKeyId: endKey.id,
+        },
+      ];
     });
     const controlByStart = new Map(controls.map((control) => [control.outKeyId, control]));
     const commands = keyframes.length ? [`M ${keyframes[0].x} ${keyframes[0].y}`] : [];
@@ -538,21 +601,32 @@ export function Stage({
       const end = keyframes[index + 1];
       const control = startKey ? controlByStart.get(startKey.id) : undefined;
       if (control) {
-        commands.push(`C ${control.out.x} ${control.out.y} ${control.in.x} ${control.in.y} ${end.x} ${end.y}`);
+        commands.push(
+          `C ${control.out.x} ${control.out.y} ${control.in.x} ${control.in.y} ${end.x} ${end.y}`,
+        );
       } else {
         commands.push(`L ${end.x} ${end.y}`);
       }
     }
     return { keyframes, pathData: commands.join(" "), controls };
-  }, [selectedLayer, fps]);
+  }, [selectedLayer, fps, layers]);
 
   const blurByLayer = new Map(
     motionBlur
       ? layers
-          .filter((layer) => layer.visible && layerIsActive(layer, time, duration, fps))
+          .filter(
+            (layer) =>
+              layer.kind !== "group" &&
+              layerIsVisible(layer, layers) &&
+              layerIsSoloVisible(layer, layers) &&
+              layerIsActive(layer, time, duration, fps),
+          )
           .map(
             (layer) =>
-              [layer.id, motionBlurVector(layer, time, duration, motionBlurStrength, fps)] as const,
+              [
+                layer.id,
+                motionBlurVector(layer, time, duration, motionBlurStrength, fps, layers),
+              ] as const,
           )
           .filter(([, blur]) => blur.x > 0.1 || blur.y > 0.1)
       : [],
@@ -730,8 +804,17 @@ export function Stage({
             }
             const r = resize.current;
             if (r) {
-              const screenDx = point.x - r.sx;
-              const screenDy = point.y - r.sy;
+              const latest = useDoc.getState();
+              const targetLayer = latest.layers.find((item) => item.id === r.id);
+              const parentMatrix = targetLayer
+                ? layerParentMatrix(targetLayer, latest.layers, latest.time, latest.fps)
+                : null;
+              const parentDelta = { x: point.x - r.sx, y: point.y - r.sy };
+              const localDelta = parentMatrix
+                ? transformVector(invertMatrix(parentMatrix), parentDelta)
+                : parentDelta;
+              const screenDx = localDelta.x;
+              const screenDy = localDelta.y;
               const angle = (r.rotate * Math.PI) / 180;
               const cos = Math.cos(angle);
               const sin = Math.sin(angle);
@@ -757,12 +840,8 @@ export function Stage({
               if (r.scaleAnimated) {
                 const nextScaleX = Math.max(0.01, r.scaleX * factorX);
                 const nextScaleY = Math.max(0.01, r.scaleY * factorY);
-                const localShiftX = fromCenter
-                  ? 0
-                  : (r.hx * r.w * (nextScaleX - r.scaleX)) / 2;
-                const localShiftY = fromCenter
-                  ? 0
-                  : (r.hy * r.h * (nextScaleY - r.scaleY)) / 2;
+                const localShiftX = fromCenter ? 0 : (r.hx * r.w * (nextScaleX - r.scaleX)) / 2;
+                const localShiftY = fromCenter ? 0 : (r.hy * r.h * (nextScaleY - r.scaleY)) / 2;
                 const shiftX = cos * localShiftX - sin * localShiftY;
                 const shiftY = sin * localShiftX + cos * localShiftY;
                 setDisplayed(r.id, "scale", nextScaleX, true);
@@ -795,16 +874,30 @@ export function Stage({
             }
             const d = drag.current;
             if (!d) return;
-            let dx = point.x - d.sx;
-            let dy = point.y - d.sy;
+            const latest = useDoc.getState();
+            const movingLayer = latest.layers.find((layer) => layer.id === d.id);
+            const parentMatrix = movingLayer
+              ? layerParentMatrix(movingLayer, latest.layers, latest.time, latest.fps)
+              : null;
+            const localDelta = parentMatrix
+              ? transformVector(invertMatrix(parentMatrix), {
+                  x: point.x - d.sx,
+                  y: point.y - d.sy,
+                })
+              : { x: point.x - d.sx, y: point.y - d.sy };
+            let dx = localDelta.x;
+            let dy = localDelta.y;
             let guideX: number | undefined;
             let guideY: number | undefined;
-            if (snapEnabled) {
-              const moving = useDoc.getState().layers.find((layer) => layer.id === d.id);
+            if (snapEnabled && movingLayer && !movingLayer.parentId && !movingLayer.parentOffset) {
+              const moving = movingLayer;
               const matrix = svg.getScreenCTM();
               if (moving && matrix) {
                 const threshold = 8 / Math.max(0.001, Math.hypot(matrix.a, matrix.b));
-                const others = layers.filter((layer) => layer.visible && layer.id !== d.id);
+                const others = layers.filter(
+                  (layer) =>
+                    layer.kind !== "group" && layerIsVisible(layer, layers) && layer.id !== d.id,
+                );
                 const xTargets = [0, projectWidth / 2, projectWidth];
                 const yTargets = [0, projectHeight / 2, projectHeight];
                 for (const other of others) {
@@ -846,7 +939,10 @@ export function Stage({
                 endY: point.y,
                 constrainRatio: event.shiftKey,
               };
-              const distance = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
+              const distance = Math.hypot(
+                event.clientX - start.clientX,
+                event.clientY - start.clientY,
+              );
               drawingRef.current = null;
               setDrawing(null);
               if (distance < 3) {
@@ -889,8 +985,12 @@ export function Stage({
             if (motionHandle && selectedLayer) {
               const side = motionHandle.dataset.motionHandle as "in" | "out";
               const keyId = motionHandle.dataset.keyId;
-              const control = motionPath?.controls.find((item) => side === "out" ? item.outKeyId === keyId : item.inKeyId === keyId);
-              const key = [...selectedLayer.tracks.x, ...selectedLayer.tracks.y].find((item) => item.id === keyId);
+              const control = motionPath?.controls.find((item) =>
+                side === "out" ? item.outKeyId === keyId : item.inKeyId === keyId,
+              );
+              const key = [...selectedLayer.tracks.x, ...selectedLayer.tracks.y].find(
+                (item) => item.id === keyId,
+              );
               if (key && control && keyId) {
                 const origin = side === "out" ? control.start : control.end;
                 const handlePoint = side === "out" ? control.out : control.in;
@@ -924,9 +1024,10 @@ export function Stage({
               }
               const first = penPointsRef.current[0];
               const matrix = svg.getScreenCTM();
-              const closeDistance = first && matrix
-                ? Math.hypot((first.x - p.x) * matrix.a, (first.y - p.y) * matrix.d)
-                : Infinity;
+              const closeDistance =
+                first && matrix
+                  ? Math.hypot((first.x - p.x) * matrix.a, (first.y - p.y) * matrix.d)
+                  : Infinity;
               if (event.detail > 1) {
                 finishPenRef.current(false);
                 return;
@@ -993,316 +1094,440 @@ export function Stage({
             height={Math.max(0, projectHeight - 1)}
             className="stage-canvas-boundary"
           />
-          {layers.map((layer) => {
-            const p = pose(layer, time, fps);
-            const selected = layer.id === selectedId;
-            const clipActive = layerIsActive(layer, time, duration, fps);
-            const allHandles = [
-              { id: "nw", x: layer.x - 4, y: layer.y - 4, hx: -1, hy: -1, cursor: "nwse-resize" },
-              {
-                id: "n",
-                x: layer.x + layer.w / 2 - 4,
-                y: layer.y - 4,
-                hx: 0,
-                hy: -1,
-                cursor: "ns-resize",
-              },
-              {
-                id: "ne",
-                x: layer.x + layer.w - 4,
-                y: layer.y - 4,
-                hx: 1,
-                hy: -1,
-                cursor: "nesw-resize",
-              },
-              {
-                id: "e",
-                x: layer.x + layer.w - 4,
-                y: layer.y + layer.h / 2 - 4,
-                hx: 1,
-                hy: 0,
-                cursor: "ew-resize",
-              },
-              {
-                id: "se",
-                x: layer.x + layer.w - 4,
-                y: layer.y + layer.h - 4,
-                hx: 1,
-                hy: 1,
-                cursor: "nwse-resize",
-              },
-              {
-                id: "s",
-                x: layer.x + layer.w / 2 - 4,
-                y: layer.y + layer.h - 4,
-                hx: 0,
-                hy: 1,
-                cursor: "ns-resize",
-              },
-              {
-                id: "sw",
-                x: layer.x - 4,
-                y: layer.y + layer.h - 4,
-                hx: -1,
-                hy: 1,
-                cursor: "nesw-resize",
-              },
-              {
-                id: "w",
-                x: layer.x - 4,
-                y: layer.y + layer.h / 2 - 4,
-                hx: -1,
-                hy: 0,
-                cursor: "ew-resize",
-              },
-            ] as const;
-            const handles =
-              layer.kind === "rect" || layer.kind === "ellipse"
-                ? allHandles
-                : allHandles.filter((handle) => handle.hx !== 0 && handle.hy !== 0);
-            return (
-              <g
-                key={layer.id}
-                data-layer-id={layer.id}
-                transform={svgTransform(layer, time, fps)}
-                style={{
-                  pointerEvents: layer.visible && clipActive ? "auto" : "none",
-                  visibility: layer.visible && clipActive ? "visible" : "hidden",
-                }}
-                onPointerDown={(event) => {
-                  if (tool !== "select") return;
-                  event.stopPropagation();
-                  const svg = svgRef.current;
-                  if (!svg) return;
-                  selectLayer(layer.id);
-                  if (selected && layer.kind === "path" && layer.path) {
-                    const target = event.target as Element;
-                    const handle = target.closest<SVGCircleElement>("[data-path-handle]");
-                    const anchor = target.closest<SVGCircleElement>("[data-path-anchor]");
-                    const marker = handle ?? anchor;
-                    if (marker) {
-                      const index = Number(marker.dataset.pathHandleIndex ?? marker.dataset.pathAnchor);
-                      const pointData = layer.path[index];
-                      if (pointData) {
-                        const local = svgPointInGroup(event.currentTarget, event);
-                        pathPointDrag.current = {
-                          id: layer.id,
-                          index,
-                          side: handle?.dataset.pathHandle === "in"
-                            ? "in"
-                            : handle?.dataset.pathHandle === "out"
-                              ? "out"
-                              : "anchor",
-                          sx: local.x,
-                          sy: local.y,
-                          startPoint: { ...pointData },
-                          group: event.currentTarget,
-                        };
-                        beginPointerUndo();
-                        svg.setPointerCapture(event.pointerId);
-                        return;
-                      }
-                    }
-                  }
-                  const point = svgPoint(svg, event);
-                  const live = useDoc.getState().layers.find((l) => l.id === layer.id);
-                  if (!live) return;
-                  const now = useDoc.getState().time;
-                  drag.current = {
-                    id: layer.id,
-                    sx: point.x,
-                    sy: point.y,
-                    x: live.x,
-                    y: live.y,
-                    ox: pose(live, now, useDoc.getState().fps).dx,
-                    oy: pose(live, now, useDoc.getState().fps).dy,
-                  };
-                  beginPointerUndo();
-                  svg.setPointerCapture(event.pointerId);
-                }}
-              >
+          {layers
+            .filter((item) => item.kind !== "group")
+            .map((layer) => {
+              const p = pose(layer, time, fps);
+              const displayedPath = layer.kind === "path" ? pathAt(layer, time, fps) : undefined;
+              const selected = layer.id === selectedId;
+              const soloVisible = layerIsSoloVisible(layer, layers);
+              const effectivelyVisible = layerIsVisible(layer, layers);
+              const locked = layerIsLocked(layer, layers);
+              const clipActive = layerIsActive(layer, time, duration, fps);
+              const allHandles = [
+                { id: "nw", x: layer.x - 4, y: layer.y - 4, hx: -1, hy: -1, cursor: "nwse-resize" },
+                {
+                  id: "n",
+                  x: layer.x + layer.w / 2 - 4,
+                  y: layer.y - 4,
+                  hx: 0,
+                  hy: -1,
+                  cursor: "ns-resize",
+                },
+                {
+                  id: "ne",
+                  x: layer.x + layer.w - 4,
+                  y: layer.y - 4,
+                  hx: 1,
+                  hy: -1,
+                  cursor: "nesw-resize",
+                },
+                {
+                  id: "e",
+                  x: layer.x + layer.w - 4,
+                  y: layer.y + layer.h / 2 - 4,
+                  hx: 1,
+                  hy: 0,
+                  cursor: "ew-resize",
+                },
+                {
+                  id: "se",
+                  x: layer.x + layer.w - 4,
+                  y: layer.y + layer.h - 4,
+                  hx: 1,
+                  hy: 1,
+                  cursor: "nwse-resize",
+                },
+                {
+                  id: "s",
+                  x: layer.x + layer.w / 2 - 4,
+                  y: layer.y + layer.h - 4,
+                  hx: 0,
+                  hy: 1,
+                  cursor: "ns-resize",
+                },
+                {
+                  id: "sw",
+                  x: layer.x - 4,
+                  y: layer.y + layer.h - 4,
+                  hx: -1,
+                  hy: 1,
+                  cursor: "nesw-resize",
+                },
+                {
+                  id: "w",
+                  x: layer.x - 4,
+                  y: layer.y + layer.h / 2 - 4,
+                  hx: -1,
+                  hy: 0,
+                  cursor: "ew-resize",
+                },
+              ] as const;
+              const handles =
+                layer.kind === "rect" || layer.kind === "ellipse"
+                  ? allHandles
+                  : allHandles.filter((handle) => handle.hx !== 0 && handle.hy !== 0);
+              return (
                 <g
-                  opacity={layer.visible ? p.opacity : 0}
-                  filter={blurByLayer.has(layer.id) ? `url(#motion-blur-${layer.id})` : undefined}
-                >
-                  <ShapeBody layer={layer} time={time} fps={fps} />
-                </g>
-                {textEdit?.id === layer.id && layer.kind === "text" && (
-                  <foreignObject x={layer.x} y={layer.y} width={layer.w} height={layer.h}>
-                    <input
-                      ref={textInputRef}
-                      type="text"
-                      aria-label="编辑画布文字"
-                      value={textEdit.value}
-                      onChange={(event) =>
-                        setTextEdit({ id: layer.id, value: event.target.value })
-                      }
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onDoubleClick={(event) => event.stopPropagation()}
-                      onBlur={commitTextEdit}
-                      onKeyDown={(event) => {
-                        event.stopPropagation();
-                        if (event.nativeEvent.isComposing) return;
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          commitTextEdit();
-                        } else if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelTextEdit();
-                        }
-                      }}
-                      className="size-full border border-primary bg-bg/95 px-2 text-center text-fg outline-none"
-                      style={{
-                        fontFamily: "IBM Plex Sans, Source Han Sans SC, sans-serif",
-                        fontSize: layer.fontSize,
-                        fontWeight: layer.fontWeight ?? 600,
-                      }}
-                    />
-                  </foreignObject>
-                )}
-                {layer.kind === "path" && (
-                  <path
-                    d={layerPathData(layer)}
-                    className="stage-path-hit-area"
-                    fill="none"
-                    stroke="transparent"
-                    strokeWidth={14}
-                    pointerEvents="stroke"
-                  />
-                )}
-                {selected && (
-                  <rect
-                    x={layer.x - 4}
-                    y={layer.y - 4}
-                    width={layer.w + 8}
-                    height={layer.h + 8}
-                    fill="none"
-                    className="stage-selection-outline-outer"
-                    pointerEvents="none"
-                  />
-                )}
-                {selected && (
-                  <rect
-                    x={layer.x - 4}
-                    y={layer.y - 4}
-                    width={layer.w + 8}
-                    height={layer.h + 8}
-                    className="stage-selection-outline-inner"
-                    pointerEvents="none"
-                  />
-                )}
-                {selected && (
-                  <g>
-                    {handles.map((handle) => (
-                      <rect
-                        key={handle.id}
-                        data-resize-handle={handle.id}
-                        className="stage-resize-handle"
-                        x={handle.x}
-                        y={handle.y}
-                        width={8}
-                        height={8}
-                        rx={1.5}
-                        style={{ cursor: handle.cursor, touchAction: "none" }}
-                        onPointerDown={(event) => {
-                          event.stopPropagation();
-                          if (tool !== "select") return;
-                          const svg = svgRef.current;
-                          if (!svg) return;
-                          selectLayer(layer.id);
-                          const point = svgPoint(svg, event);
-                          const currentPose = pose(layer, time, fps);
-                          resize.current = {
+                  key={layer.id}
+                  data-layer-id={layer.id}
+                  transform={svgWorldTransform(layer, layers, time, fps)}
+                  style={{
+                    pointerEvents:
+                      effectivelyVisible && soloVisible && clipActive ? "auto" : "none",
+                    visibility:
+                      effectivelyVisible && soloVisible && clipActive ? "visible" : "hidden",
+                  }}
+                  onPointerDown={(event) => {
+                    if (tool !== "select") return;
+                    event.stopPropagation();
+                    if (locked) return;
+                    const svg = svgRef.current;
+                    if (!svg) return;
+                    selectLayer(layer.id);
+                    if (selected && layer.kind === "path" && displayedPath?.points.length) {
+                      const target = event.target as Element;
+                      const handle = target.closest<SVGCircleElement>("[data-path-handle]");
+                      const anchor = target.closest<SVGCircleElement>("[data-path-anchor]");
+                      const marker = handle ?? anchor;
+                      if (marker) {
+                        const index = Number(
+                          marker.dataset.pathHandleIndex ?? marker.dataset.pathAnchor,
+                        );
+                        const pointData = displayedPath.points[index];
+                        if (pointData) {
+                          const local = svgPointInGroup(event.currentTarget, event);
+                          pathPointDrag.current = {
                             id: layer.id,
-                            sx: point.x,
-                            sy: point.y,
-                            x: layer.x,
-                            y: layer.y,
-                            w: layer.w,
-                            h: layer.h,
-                            scaleX: currentPose.scale,
-                            scaleY: currentPose.scaleY,
-                            rotate: currentPose.rotate,
-                            dx: currentPose.dx,
-                            dy: currentPose.dy,
-                            fontSize: layer.fontSize,
-                            lockRatio: layer.scaleLinked !== false,
-                            scaleFontSize: layer.kind === "text",
-                            scaleAnimated:
-                              layer.armed.scale ||
-                              layer.armed.scaleY ||
-                              useDoc.getState().autoKey,
-                            hx: handle.hx as -1 | 0 | 1,
-                            hy: handle.hy as -1 | 0 | 1,
+                            index,
+                            side:
+                              handle?.dataset.pathHandle === "in"
+                                ? "in"
+                                : handle?.dataset.pathHandle === "out"
+                                  ? "out"
+                                  : "anchor",
+                            sx: local.x,
+                            sy: local.y,
+                            startPoint: { ...pointData },
+                            group: event.currentTarget,
                           };
                           beginPointerUndo();
                           svg.setPointerCapture(event.pointerId);
+                          return;
+                        }
+                      }
+                    }
+                    const point = svgPoint(svg, event);
+                    const live = useDoc.getState().layers.find((l) => l.id === layer.id);
+                    if (!live) return;
+                    const now = useDoc.getState().time;
+                    drag.current = {
+                      id: layer.id,
+                      sx: point.x,
+                      sy: point.y,
+                      x: live.x,
+                      y: live.y,
+                      ox: pose(live, now, useDoc.getState().fps).dx,
+                      oy: pose(live, now, useDoc.getState().fps).dy,
+                    };
+                    beginPointerUndo();
+                    svg.setPointerCapture(event.pointerId);
+                  }}
+                >
+                  <g
+                    opacity={effectivelyVisible ? p.opacity : 0}
+                    filter={blurByLayer.has(layer.id) ? `url(#motion-blur-${layer.id})` : undefined}
+                  >
+                    <ShapeBody layer={layer} time={time} duration={duration} fps={fps} />
+                  </g>
+                  {textEdit?.id === layer.id && layer.kind === "text" && (
+                    <foreignObject x={layer.x} y={layer.y} width={layer.w} height={layer.h}>
+                      <input
+                        ref={textInputRef}
+                        type="text"
+                        aria-label="编辑画布文字"
+                        value={textEdit.value}
+                        onChange={(event) =>
+                          setTextEdit({ id: layer.id, value: event.target.value })
+                        }
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onBlur={commitTextEdit}
+                        onKeyDown={(event) => {
+                          event.stopPropagation();
+                          if (event.nativeEvent.isComposing) return;
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            commitTextEdit();
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            cancelTextEdit();
+                          }
+                        }}
+                        className="size-full border border-primary bg-bg/95 px-2 text-center text-fg outline-none"
+                        style={{
+                          fontFamily: "IBM Plex Sans, Source Han Sans SC, sans-serif",
+                          fontSize: layer.fontSize,
+                          fontWeight: layer.fontWeight ?? 600,
                         }}
                       />
-                    ))}
-                  </g>
-                )}
-                {selected && layer.kind === "path" && layer.path && tool === "select" && (
-                  <g className="stage-path-edit-overlay" aria-label="编辑路径锚点">
-                    {layer.path.map((point, index) => {
-                      const x = layer.x + point.x * layer.w;
-                      const y = layer.y + point.y * layer.h;
-                      const inX = layer.x + point.inX * layer.w;
-                      const inY = layer.y + point.inY * layer.h;
-                      const outX = layer.x + point.outX * layer.w;
-                      const outY = layer.y + point.outY * layer.h;
-                      const hasIn = Math.hypot(inX - x, inY - y) > 0.5;
-                      const hasOut = Math.hypot(outX - x, outY - y) > 0.5;
-                      return (
-                        <g key={index}>
-                          {hasIn && <line x1={x} y1={y} x2={inX} y2={inY} className="stage-pen-handle-line" />}
-                          {hasOut && <line x1={x} y1={y} x2={outX} y2={outY} className="stage-pen-handle-line" />}
-                          {hasIn && <circle data-path-handle="in" data-path-handle-index={index} cx={inX} cy={inY} r={8} className="stage-path-handle" pointerEvents="all"><title>拖动调整入侧手柄</title></circle>}
-                          {hasOut && <circle data-path-handle="out" data-path-handle-index={index} cx={outX} cy={outY} r={8} className="stage-path-handle" pointerEvents="all"><title>拖动调整出侧手柄</title></circle>}
-                          <circle data-path-anchor={index} cx={x} cy={y} r={6} className="stage-path-anchor" pointerEvents="all">
-                            <title>{`路径锚点 ${index + 1} · 拖动移动锚点`}</title>
-                          </circle>
-                        </g>
-                      );
-                    })}
-                  </g>
-                )}
-              </g>
-            );
-          })}
-          {drawing && (() => {
-            const bounds = drawingBounds(drawing);
-            const common = { fill: "rgba(76,159,255,.22)", stroke: "var(--color-primary)", strokeWidth: 2, strokeDasharray: "6 4", pointerEvents: "none" as const };
-            return (
-              <g className="stage-drawing-preview" aria-hidden="true">
-                {drawing.kind === "circle" ? (
-                  <circle cx={bounds.x + bounds.w / 2} cy={bounds.y + bounds.h / 2} r={Math.min(bounds.w, bounds.h) / 2} {...common} />
-                ) : drawing.kind === "ellipse" ? (
-                  <ellipse cx={bounds.x + bounds.w / 2} cy={bounds.y + bounds.h / 2} rx={bounds.w / 2} ry={bounds.h / 2} {...common} />
-                ) : drawing.kind === "star" ? (
-                  <path d={starPathData(bounds.x, bounds.y, bounds.w, bounds.h)} {...common} />
-                ) : drawing.kind === "text" ? (
-                  <g pointerEvents="none">
-                    <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} fill="rgba(76,159,255,.12)" stroke="var(--color-primary)" strokeDasharray="6 4" />
-                    <text x={bounds.x + 8} y={bounds.y + 24} fill="var(--color-fg)" fontSize={18}>T 文字图层</text>
-                  </g>
-                ) : (
-                  <rect x={bounds.x} y={bounds.y} width={bounds.w} height={bounds.h} rx={8} {...common} />
-                )}
-              </g>
-            );
-          })()}
+                    </foreignObject>
+                  )}
+                  {layer.kind === "path" && (
+                    <path
+                      d={layerPathData(layer, displayedPath?.points, displayedPath?.closed)}
+                      className="stage-path-hit-area"
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth={14}
+                      pointerEvents="stroke"
+                    />
+                  )}
+                  {selected && (
+                    <rect
+                      x={layer.x - 4}
+                      y={layer.y - 4}
+                      width={layer.w + 8}
+                      height={layer.h + 8}
+                      fill="none"
+                      className="stage-selection-outline-outer"
+                      pointerEvents="none"
+                    />
+                  )}
+                  {selected && (
+                    <rect
+                      x={layer.x - 4}
+                      y={layer.y - 4}
+                      width={layer.w + 8}
+                      height={layer.h + 8}
+                      className="stage-selection-outline-inner"
+                      pointerEvents="none"
+                    />
+                  )}
+                  {selected && !locked && (
+                    <g>
+                      {handles.map((handle) => (
+                        <rect
+                          key={handle.id}
+                          data-resize-handle={handle.id}
+                          className="stage-resize-handle"
+                          x={handle.x}
+                          y={handle.y}
+                          width={8}
+                          height={8}
+                          rx={1.5}
+                          style={{ cursor: handle.cursor, touchAction: "none" }}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            if (tool !== "select") return;
+                            const svg = svgRef.current;
+                            if (!svg) return;
+                            selectLayer(layer.id);
+                            const point = svgPoint(svg, event);
+                            const currentPose = pose(layer, time, fps);
+                            resize.current = {
+                              id: layer.id,
+                              sx: point.x,
+                              sy: point.y,
+                              x: layer.x,
+                              y: layer.y,
+                              w: layer.w,
+                              h: layer.h,
+                              scaleX: currentPose.scale,
+                              scaleY: currentPose.scaleY,
+                              rotate: currentPose.rotate,
+                              dx: currentPose.dx,
+                              dy: currentPose.dy,
+                              fontSize: layer.fontSize,
+                              lockRatio: layer.scaleLinked !== false,
+                              scaleFontSize: layer.kind === "text",
+                              scaleAnimated:
+                                layer.armed.scale ||
+                                layer.armed.scaleY ||
+                                useDoc.getState().autoKey,
+                              hx: handle.hx as -1 | 0 | 1,
+                              hy: handle.hy as -1 | 0 | 1,
+                            };
+                            beginPointerUndo();
+                            svg.setPointerCapture(event.pointerId);
+                          }}
+                        />
+                      ))}
+                    </g>
+                  )}
+                  {selected &&
+                    !locked &&
+                    layer.kind === "path" &&
+                    displayedPath?.points &&
+                    tool === "select" && (
+                      <g className="stage-path-edit-overlay" aria-label="编辑路径锚点">
+                        {displayedPath.points.map((point, index) => {
+                          const x = layer.x + point.x * layer.w;
+                          const y = layer.y + point.y * layer.h;
+                          const inX = layer.x + point.inX * layer.w;
+                          const inY = layer.y + point.inY * layer.h;
+                          const outX = layer.x + point.outX * layer.w;
+                          const outY = layer.y + point.outY * layer.h;
+                          const hasIn = Math.hypot(inX - x, inY - y) > 0.5;
+                          const hasOut = Math.hypot(outX - x, outY - y) > 0.5;
+                          return (
+                            <g key={index}>
+                              {hasIn && (
+                                <line
+                                  x1={x}
+                                  y1={y}
+                                  x2={inX}
+                                  y2={inY}
+                                  className="stage-pen-handle-line"
+                                />
+                              )}
+                              {hasOut && (
+                                <line
+                                  x1={x}
+                                  y1={y}
+                                  x2={outX}
+                                  y2={outY}
+                                  className="stage-pen-handle-line"
+                                />
+                              )}
+                              {hasIn && (
+                                <circle
+                                  data-path-handle="in"
+                                  data-path-handle-index={index}
+                                  cx={inX}
+                                  cy={inY}
+                                  r={8}
+                                  className="stage-path-handle"
+                                  pointerEvents="all"
+                                >
+                                  <title>拖动调整入侧手柄</title>
+                                </circle>
+                              )}
+                              {hasOut && (
+                                <circle
+                                  data-path-handle="out"
+                                  data-path-handle-index={index}
+                                  cx={outX}
+                                  cy={outY}
+                                  r={8}
+                                  className="stage-path-handle"
+                                  pointerEvents="all"
+                                >
+                                  <title>拖动调整出侧手柄</title>
+                                </circle>
+                              )}
+                              <circle
+                                data-path-anchor={index}
+                                cx={x}
+                                cy={y}
+                                r={6}
+                                className="stage-path-anchor"
+                                pointerEvents="all"
+                              >
+                                <title>{`路径锚点 ${index + 1} · 拖动移动锚点`}</title>
+                              </circle>
+                            </g>
+                          );
+                        })}
+                      </g>
+                    )}
+                </g>
+              );
+            })}
+          {drawing &&
+            (() => {
+              const bounds = drawingBounds(drawing);
+              const common = {
+                fill: "rgba(76,159,255,.22)",
+                stroke: "var(--color-primary)",
+                strokeWidth: 2,
+                strokeDasharray: "6 4",
+                pointerEvents: "none" as const,
+              };
+              return (
+                <g className="stage-drawing-preview" aria-hidden="true">
+                  {drawing.kind === "circle" ? (
+                    <circle
+                      cx={bounds.x + bounds.w / 2}
+                      cy={bounds.y + bounds.h / 2}
+                      r={Math.min(bounds.w, bounds.h) / 2}
+                      {...common}
+                    />
+                  ) : drawing.kind === "ellipse" ? (
+                    <ellipse
+                      cx={bounds.x + bounds.w / 2}
+                      cy={bounds.y + bounds.h / 2}
+                      rx={bounds.w / 2}
+                      ry={bounds.h / 2}
+                      {...common}
+                    />
+                  ) : drawing.kind === "star" ? (
+                    <path d={starPathData(bounds.x, bounds.y, bounds.w, bounds.h)} {...common} />
+                  ) : drawing.kind === "text" ? (
+                    <g pointerEvents="none">
+                      <rect
+                        x={bounds.x}
+                        y={bounds.y}
+                        width={bounds.w}
+                        height={bounds.h}
+                        fill="rgba(76,159,255,.12)"
+                        stroke="var(--color-primary)"
+                        strokeDasharray="6 4"
+                      />
+                      <text x={bounds.x + 8} y={bounds.y + 24} fill="var(--color-fg)" fontSize={18}>
+                        T 文字图层
+                      </text>
+                    </g>
+                  ) : (
+                    <rect
+                      x={bounds.x}
+                      y={bounds.y}
+                      width={bounds.w}
+                      height={bounds.h}
+                      rx={8}
+                      {...common}
+                    />
+                  )}
+                </g>
+              );
+            })()}
           {tool === "pen" && penPoints.length > 0 && (
             <g className="stage-pen-preview" aria-hidden="true">
               <path
-                d={vectorPathData(penHover ? [...penPoints, pathPoint(penHover.x, penHover.y)] : penPoints)}
+                d={vectorPathData(
+                  penHover ? [...penPoints, pathPoint(penHover.x, penHover.y)] : penPoints,
+                )}
                 className="stage-pen-preview-line"
               />
               {penPoints.map((point, index) => (
                 <g key={index}>
-                  {(Math.abs(point.outX - point.x) > 0.1 || Math.abs(point.outY - point.y) > 0.1) && <line x1={point.x} y1={point.y} x2={point.outX} y2={point.outY} className="stage-pen-handle-line" />}
-                  {(Math.abs(point.inX - point.x) > 0.1 || Math.abs(point.inY - point.y) > 0.1) && <line x1={point.x} y1={point.y} x2={point.inX} y2={point.inY} className="stage-pen-handle-line" />}
-                  <circle data-pen-anchor={index} cx={point.x} cy={point.y} r={6} className="stage-pen-anchor" pointerEvents="all" />
+                  {(Math.abs(point.outX - point.x) > 0.1 ||
+                    Math.abs(point.outY - point.y) > 0.1) && (
+                    <line
+                      x1={point.x}
+                      y1={point.y}
+                      x2={point.outX}
+                      y2={point.outY}
+                      className="stage-pen-handle-line"
+                    />
+                  )}
+                  {(Math.abs(point.inX - point.x) > 0.1 || Math.abs(point.inY - point.y) > 0.1) && (
+                    <line
+                      x1={point.x}
+                      y1={point.y}
+                      x2={point.inX}
+                      y2={point.inY}
+                      className="stage-pen-handle-line"
+                    />
+                  )}
+                  <circle
+                    data-pen-anchor={index}
+                    cx={point.x}
+                    cy={point.y}
+                    r={6}
+                    className="stage-pen-anchor"
+                    pointerEvents="all"
+                  />
                   {index === 0 && <title>点击闭合路径；双击或 Enter 完成，Esc 取消</title>}
                 </g>
               ))}
@@ -1319,22 +1544,56 @@ export function Stage({
                   cx={point.x}
                   cy={point.y}
                   r={7}
-                  className={index === 0 ? "stage-motion-path-key is-first" : "stage-motion-path-key"}
+                  className={
+                    index === 0 ? "stage-motion-path-key is-first" : "stage-motion-path-key"
+                  }
                 >
                   <title>{`位置关键帧 ${point.t.toFixed(2)}s`}</title>
                 </circle>
               ))}
               {motionPath.controls.map((control) => (
                 <g key={`${control.outKeyId}-${control.inKeyId}`} className="stage-motion-controls">
-                  <line x1={control.start.x} y1={control.start.y} x2={control.out.x} y2={control.out.y} className="stage-motion-handle-line" />
-                  <line x1={control.end.x} y1={control.end.y} x2={control.in.x} y2={control.in.y} className="stage-motion-handle-line" />
-                  <circle data-motion-handle="out" data-key-id={control.outKeyId} cx={control.out.x} cy={control.out.y} r={9} className="stage-motion-handle" role="button" aria-label="拖动贝塞尔出手柄" />
-                  <circle data-motion-handle="in" data-key-id={control.inKeyId} cx={control.in.x} cy={control.in.y} r={9} className="stage-motion-handle" role="button" aria-label="拖动贝塞尔入手柄" />
+                  <line
+                    x1={control.start.x}
+                    y1={control.start.y}
+                    x2={control.out.x}
+                    y2={control.out.y}
+                    className="stage-motion-handle-line"
+                  />
+                  <line
+                    x1={control.end.x}
+                    y1={control.end.y}
+                    x2={control.in.x}
+                    y2={control.in.y}
+                    className="stage-motion-handle-line"
+                  />
+                  <circle
+                    data-motion-handle="out"
+                    data-key-id={control.outKeyId}
+                    cx={control.out.x}
+                    cy={control.out.y}
+                    r={9}
+                    className="stage-motion-handle"
+                    role="button"
+                    aria-label="拖动贝塞尔出手柄"
+                  />
+                  <circle
+                    data-motion-handle="in"
+                    data-key-id={control.inKeyId}
+                    cx={control.in.x}
+                    cy={control.in.y}
+                    r={9}
+                    className="stage-motion-handle"
+                    role="button"
+                    aria-label="拖动贝塞尔入手柄"
+                  />
                 </g>
               ))}
               <circle
-                cx={displayed(selectedLayer, "x", time, fps) + selectedLayer.w / 2}
-                cy={displayed(selectedLayer, "y", time, fps) + selectedLayer.h / 2}
+                {...transformPoint(layerWorldMatrix(selectedLayer, layers, time, fps), {
+                  x: selectedLayer.x + selectedLayer.w / 2,
+                  y: selectedLayer.y + selectedLayer.h / 2,
+                })}
                 r={7}
                 className="stage-motion-path-current"
               />
@@ -1394,7 +1653,9 @@ export function Stage({
         >
           <Minus className="size-3" />
         </button>
-        <span className="min-w-10 text-center font-mono tabular-nums">{Math.round(camera.zoom * 100)}%</span>
+        <span className="min-w-10 text-center font-mono tabular-nums">
+          {Math.round(camera.zoom * 100)}%
+        </span>
         <button
           type="button"
           aria-label="放大画布"

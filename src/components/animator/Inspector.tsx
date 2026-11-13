@@ -5,6 +5,7 @@ import {
   ArrowRight,
   ArrowUp,
   Circle,
+  Folder,
   Image as ImageIcon,
   PenTool,
   Square,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_BEZIER,
+  DEFAULT_PATH_GROWTH,
   FONT_FAMILIES,
   PROP_LABEL,
   colorToNumber,
@@ -22,6 +24,7 @@ import {
   numberToColor,
   type Interp,
   type Layer,
+  type PathGrowthSettings,
   type PropKey,
   type ShapeKind,
 } from "@/lib/animator/model";
@@ -43,6 +46,7 @@ const KIND_LABEL: Record<ShapeKind, string> = {
   image: "图片",
   star: "五角星",
   path: "钢笔路径",
+  group: "图层组",
 };
 
 const KIND_ICON: Record<ShapeKind, LucideIcon> = {
@@ -53,20 +57,29 @@ const KIND_ICON: Record<ShapeKind, LucideIcon> = {
   image: ImageIcon,
   star: Star,
   path: PenTool,
+  group: Folder,
 };
 
 export function Inspector() {
   const layer = useDoc((s) => s.layers.find((l) => l.id === s.selectedId));
+  const layers = useDoc((s) => s.layers);
   const time = useDoc((s) => s.time);
+  const duration = useDoc((s) => s.duration);
   const fps = useDoc((s) => s.fps);
   const selectedKey = useDoc((s) => s.selectedKey);
+  const selectedPathKey = useDoc((s) => s.selectedPathKey);
   const setDisplayed = useDoc((s) => s.setDisplayed);
   const setPaint = useDoc((s) => s.setPaint);
   const rename = useDoc((s) => s.rename);
   const deleteLayer = useDoc((s) => s.deleteLayer);
+  const ungroupLayer = useDoc((s) => s.ungroupLayer);
+  const setLayerParent = useDoc((s) => s.setLayerParent);
   const patchKey = useDoc((s) => s.patchKey);
   const deleteSelectedKey = useDoc((s) => s.deleteSelectedKey);
   const easyEase = useDoc((s) => s.easyEase);
+  const movePathKey = useDoc((s) => s.movePathKey);
+  const patchPathKey = useDoc((s) => s.patchPathKey);
+  const deletePathKey = useDoc((s) => s.deletePathKey);
 
   if (!layer) {
     return (
@@ -88,7 +101,30 @@ export function Inspector() {
     selectedKey && selectedKey.layerId === layer.id
       ? layer.tracks[selectedKey.prop].find((k) => k.id === selectedKey.id)
       : undefined;
+  const pathKeyMeta =
+    selectedPathKey?.layerId === layer.id
+      ? layer.pathKeys?.find((key) => key.id === selectedPathKey.id)
+      : undefined;
   const LayerIcon = KIND_ICON[layer.kind];
+  const groupMembers =
+    layer.kind === "group" ? layers.filter((item) => item.groupId === layer.id) : [];
+  const parentOptions =
+    layer.kind !== "group"
+      ? layers.filter((candidate) => {
+          if (candidate.kind === "group" || candidate.id === layer.id) return false;
+          let current: Layer | undefined = candidate;
+          const visited = new Set<string>();
+          while (current && !visited.has(current.id)) {
+            if (current.id === layer.id) return false;
+            visited.add(current.id);
+            current = current.parentId
+              ? layers.find((item) => item.id === current!.parentId)
+              : undefined;
+          }
+          return true;
+        })
+      : [];
+  const pathGrowth: PathGrowthSettings = layer.pathGrowth ?? DEFAULT_PATH_GROWTH;
 
   return (
     <div className="space-y-4 p-3.5 pb-5">
@@ -116,55 +152,107 @@ export function Inspector() {
         </label>
       </div>
 
-      <PositionNudge layer={layer} time={time} fps={fps} setDisplayed={setDisplayed} />
-
-      <PropertySection title="尺寸">
-        <div className="grid grid-cols-2 gap-2">
-          <NumberField
-            label="宽度"
-            value={Math.round(layer.w)}
-            min={4}
-            suffix="px"
-            onChange={(value) => setPaint(layer.id, { w: Math.max(4, value) })}
-          />
-          <NumberField
-            label="高度"
-            value={Math.round(layer.h)}
-            min={4}
-            suffix="px"
-            onChange={(value) => setPaint(layer.id, { h: Math.max(4, value) })}
-          />
-        </div>
-        {layer.kind === "rect" && (
-          <div className="rounded-md border border-border bg-surface-2/25 p-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-muted">圆角半径</span>
-              <NumberField
-                label="圆角半径"
-                value={Math.round(Math.min(layer.cornerRadius ?? 8, Math.min(layer.w, layer.h) / 2))}
-                min={0}
-                max={Math.floor(Math.min(layer.w, layer.h) / 2)}
-                suffix="px"
-                ariaLabel="矩形圆角"
-                onChange={(value) => {
-                  const max = Math.floor(Math.min(layer.w, layer.h) / 2);
-                  setPaint(layer.id, { cornerRadius: Math.min(max, Math.max(0, value)) });
-                }}
-                compact
-              />
+      {layer.kind === "group" ? (
+        <section className="space-y-3 rounded-lg border border-border bg-surface-2/30 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold text-fg">编组</p>
+              <p className="mt-1 text-[10px] text-muted">包含 {groupMembers.length} 个直接子图层</p>
             </div>
-            <input
-              aria-label="矩形圆角滑块"
-              type="range"
-              min={0}
-              max={Math.max(1, Math.floor(Math.min(layer.w, layer.h) / 2))}
-              value={Math.min(layer.cornerRadius ?? 8, Math.floor(Math.min(layer.w, layer.h) / 2))}
-              onChange={(event) => setPaint(layer.id, { cornerRadius: Number(event.target.value) })}
-              className="timeline-range mt-1 w-full"
+            <Folder className="size-4 text-primary" />
+          </div>
+          <button
+            type="button"
+            onClick={() => ungroupLayer(layer.id)}
+            disabled={groupMembers.length === 0}
+            className="h-8 w-full rounded-md border border-border bg-surface/60 text-xs text-fg transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:opacity-40"
+          >
+            取消编组
+          </button>
+        </section>
+      ) : (
+        <>
+          <PropertySection title="父级链接">
+            <label className="block space-y-1">
+              <span className="text-[10px] text-muted">跟随图层变换</span>
+              <select
+                aria-label="父级图层"
+                value={layer.parentId ?? ""}
+                onChange={(event) => setLayerParent(layer.id, event.target.value || null)}
+                className="h-9 w-full rounded-md border border-border bg-bg/70 px-2.5 text-xs text-fg outline-none transition-colors hover:border-primary/35 focus:border-primary/65 focus:ring-2 focus:ring-primary/15"
+              >
+                <option value="">无父级</option>
+                {parentOptions.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="text-[10px] leading-4 text-muted">
+              链接时保留当前画面位置；之后跟随父级位移、旋转和缩放。
+            </p>
+          </PropertySection>
+          <PositionNudge layer={layer} time={time} fps={fps} setDisplayed={setDisplayed} />
+        </>
+      )}
+
+      {layer.kind !== "group" && (
+        <PropertySection title="尺寸">
+          <div className="grid grid-cols-2 gap-2">
+            <NumberField
+              label="宽度"
+              value={Math.round(layer.w)}
+              min={4}
+              suffix="px"
+              onChange={(value) => setPaint(layer.id, { w: Math.max(4, value) })}
+            />
+            <NumberField
+              label="高度"
+              value={Math.round(layer.h)}
+              min={4}
+              suffix="px"
+              onChange={(value) => setPaint(layer.id, { h: Math.max(4, value) })}
             />
           </div>
-        )}
-      </PropertySection>
+          {layer.kind === "rect" && (
+            <div className="rounded-md border border-border bg-surface-2/25 p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-muted">圆角半径</span>
+                <NumberField
+                  label="圆角半径"
+                  value={Math.round(
+                    Math.min(layer.cornerRadius ?? 8, Math.min(layer.w, layer.h) / 2),
+                  )}
+                  min={0}
+                  max={Math.floor(Math.min(layer.w, layer.h) / 2)}
+                  suffix="px"
+                  ariaLabel="矩形圆角"
+                  onChange={(value) => {
+                    const max = Math.floor(Math.min(layer.w, layer.h) / 2);
+                    setPaint(layer.id, { cornerRadius: Math.min(max, Math.max(0, value)) });
+                  }}
+                  compact
+                />
+              </div>
+              <input
+                aria-label="矩形圆角滑块"
+                type="range"
+                min={0}
+                max={Math.max(1, Math.floor(Math.min(layer.w, layer.h) / 2))}
+                value={Math.min(
+                  layer.cornerRadius ?? 8,
+                  Math.floor(Math.min(layer.w, layer.h) / 2),
+                )}
+                onChange={(event) =>
+                  setPaint(layer.id, { cornerRadius: Number(event.target.value) })
+                }
+                className="timeline-range mt-1 w-full"
+              />
+            </div>
+          )}
+        </PropertySection>
+      )}
 
       {layer.kind === "text" && (
         <PropertySection title="文字">
@@ -220,59 +308,158 @@ export function Inspector() {
         </PropertySection>
       )}
 
-      <PropertySection title="填充与描边">
-        <div className="grid grid-cols-2 gap-2">
-          <ColorField
-            label="填充"
-            value={layer.fill}
-            ariaLabel="填充颜色"
-            onChange={(value) => setPaint(layer.id, { fill: value })}
-          />
-          <ColorField
-            label="描边"
-            value={layer.stroke}
-            ariaLabel="描边颜色"
-            onChange={(value) => setPaint(layer.id, { stroke: value })}
-          />
-        </div>
-        <div className="rounded-md border border-border bg-surface-2/25 px-2.5 py-2">
-          <div className="mb-1 flex items-center justify-between">
-            <span className="text-[10px] text-muted">描边粗细</span>
-            <span className="font-mono text-[10px] text-fg">{layer.strokeWidth.toFixed(1)} px</span>
+      {layer.kind !== "group" && layer.kind !== "image" && (
+        <PropertySection title="填充与描边">
+          <div className="grid grid-cols-2 gap-2">
+            <PaintField
+              label="填充"
+              value={layer.fill}
+              enabled={layer.fillEnabled !== false}
+              onToggle={() => setPaint(layer.id, { fillEnabled: layer.fillEnabled === false })}
+              onChange={(value) => setPaint(layer.id, { fill: value })}
+            />
+            <PaintField
+              label="描边"
+              value={layer.stroke}
+              enabled={layer.strokeEnabled !== false}
+              onToggle={() => setPaint(layer.id, { strokeEnabled: layer.strokeEnabled === false })}
+              onChange={(value) => setPaint(layer.id, { stroke: value })}
+            />
           </div>
-          <input
-            aria-label="描边粗细"
-            type="range"
-            min={0}
-            max={80}
-            step={0.5}
-            value={layer.strokeWidth}
-            onChange={(event) => setPaint(layer.id, { strokeWidth: Number(event.target.value) })}
-            className="timeline-range w-full"
-          />
-          <div className="mt-1 flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted">0</span>
+          <div
+            className={`rounded-md border border-border bg-surface-2/25 px-2.5 py-2 ${layer.strokeEnabled === false ? "opacity-55" : ""}`}
+          >
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-[10px] text-muted">描边粗细</span>
+              <span className="font-mono text-[10px] text-fg">
+                {layer.strokeWidth.toFixed(1)} px
+              </span>
+            </div>
             <input
-              aria-label="描边粗细数值"
-              type="number"
+              aria-label="描边粗细"
+              type="range"
               min={0}
               max={80}
               step={0.5}
+              disabled={layer.strokeEnabled === false}
               value={layer.strokeWidth}
-              onChange={(event) => setPaint(layer.id, { strokeWidth: Math.max(0, Number(event.target.value) || 0) })}
-              className="h-7 w-16 rounded border border-border bg-bg/70 px-1.5 text-right font-mono text-[11px] text-fg outline-none focus:border-primary/65 focus:ring-2 focus:ring-primary/15"
+              onChange={(event) => setPaint(layer.id, { strokeWidth: Number(event.target.value) })}
+              className="timeline-range w-full"
             />
-            <span className="text-[10px] text-muted">80 px</span>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted">0</span>
+              <input
+                aria-label="描边粗细数值"
+                type="number"
+                min={0}
+                max={80}
+                step={0.5}
+                disabled={layer.strokeEnabled === false}
+                value={layer.strokeWidth}
+                onChange={(event) =>
+                  setPaint(layer.id, { strokeWidth: Math.max(0, Number(event.target.value) || 0) })
+                }
+                className="h-7 w-16 rounded border border-border bg-bg/70 px-1.5 text-right font-mono text-[11px] text-fg outline-none focus:border-primary/65 focus:ring-2 focus:ring-primary/15"
+              />
+              <span className="text-[10px] text-muted">80 px</span>
+            </div>
           </div>
-        </div>
-      </PropertySection>
+        </PropertySection>
+      )}
+
+      {layer.kind === "path" && (
+        <PropertySection title="路径生长">
+          <div className="rounded-md border border-border bg-surface-2/25 p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium text-fg">描边绘制动画</p>
+                <p className="mt-0.5 text-[9px] leading-4 text-muted">
+                  沿路径逐步显现，填充在绘制完成后出现
+                </p>
+              </div>
+              <CompactSwitch
+                label="路径生长"
+                enabled={pathGrowth.enabled}
+                onToggle={() =>
+                  setPaint(layer.id, {
+                    pathGrowth: { ...pathGrowth, enabled: !pathGrowth.enabled },
+                  })
+                }
+              />
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-1 rounded-md border border-border bg-bg/60 p-1">
+              {(
+                [
+                  ["forward", "从起点生长"],
+                  ["both", "两端向中间"],
+                ] as const
+              ).map(([direction, label]) => (
+                <button
+                  key={direction}
+                  type="button"
+                  aria-pressed={pathGrowth.direction === direction}
+                  onClick={() =>
+                    setPaint(layer.id, {
+                      pathGrowth: { ...pathGrowth, direction },
+                    })
+                  }
+                  className={`h-7 rounded text-[10px] transition-colors focus-visible:outline-2 focus-visible:outline-primary ${pathGrowth.direction === direction ? "bg-primary/15 text-primary" : "text-muted hover:bg-surface-2 hover:text-fg"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <NumberField
+                label="延迟"
+                ariaLabel="路径生长延迟"
+                value={Number(pathGrowth.delay.toFixed(3))}
+                min={0}
+                max={duration}
+                step={1 / fps}
+                suffix="s"
+                onChange={(value) =>
+                  setPaint(layer.id, {
+                    pathGrowth: {
+                      ...pathGrowth,
+                      delay: Math.min(duration, Math.max(0, value)),
+                    },
+                  })
+                }
+              />
+              <NumberField
+                label="持续时间"
+                ariaLabel="路径生长持续时间"
+                value={Number(pathGrowth.duration.toFixed(3))}
+                min={1 / fps}
+                max={duration}
+                step={1 / fps}
+                suffix="s"
+                onChange={(value) =>
+                  setPaint(layer.id, {
+                    pathGrowth: {
+                      ...pathGrowth,
+                      duration: Math.min(duration, Math.max(1 / fps, value)),
+                    },
+                  })
+                }
+              />
+            </div>
+            <p className="mt-2 text-[9px] leading-4 text-muted">
+              从图层入点开始计时；在时间线上播放即可预览生长过程。
+            </p>
+          </div>
+        </PropertySection>
+      )}
 
       {keyMeta && selectedKey && (
         <section className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
           <div className="flex items-start justify-between gap-2">
             <div>
               <p className="text-[10px] font-medium tracking-wide text-primary">关键帧属性</p>
-              <h2 className="mt-0.5 text-xs font-semibold text-fg">{PROP_LABEL[selectedKey.prop]}</h2>
+              <h2 className="mt-0.5 text-xs font-semibold text-fg">
+                {PROP_LABEL[selectedKey.prop]}
+              </h2>
             </div>
             <span className="rounded-md border border-primary/25 bg-primary/10 px-1.5 py-1 font-mono text-[10px] text-primary">
               K
@@ -348,13 +535,66 @@ export function Inspector() {
         </section>
       )}
 
+      {pathKeyMeta && (
+        <section className="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="text-[10px] font-medium tracking-wide text-primary">路径关键帧</p>
+              <h2 className="mt-0.5 text-xs font-semibold text-fg">
+                {pathKeyMeta.points.length} 个锚点
+              </h2>
+            </div>
+            <span className="rounded-md border border-primary/25 bg-primary/10 px-1.5 py-1 font-mono text-[10px] text-primary">
+              K
+            </span>
+          </div>
+          <NumberField
+            label="时间"
+            value={Number(pathKeyMeta.t.toFixed(3))}
+            min={0}
+            step={1 / fps}
+            suffix="s"
+            onChange={(value) => movePathKey(layer.id, pathKeyMeta.id, value)}
+          />
+          <label className="block space-y-1">
+            <span className="text-[10px] text-muted">插值方式</span>
+            <select
+              value={pathKeyMeta.interp}
+              onChange={(event) =>
+                patchPathKey(layer.id, pathKeyMeta.id, { interp: event.target.value as Interp })
+              }
+              className="h-9 w-full rounded-md border border-border bg-bg/70 px-2.5 text-xs text-fg outline-none focus:border-primary/65 focus:ring-2 focus:ring-primary/15"
+            >
+              {(Object.keys(INTERP_LABEL) as Interp[]).map((key) => (
+                <option key={key} value={key}>
+                  {INTERP_LABEL[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {pathKeyMeta.interp === "bezier" && (
+            <BezierEditor
+              curve={pathKeyMeta.bezier ?? DEFAULT_BEZIER}
+              onChange={(bezier) => patchPathKey(layer.id, pathKeyMeta.id, { bezier })}
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => deletePathKey(layer.id, pathKeyMeta.id)}
+            className="h-8 w-full rounded-md border border-danger/25 bg-danger/5 text-xs text-danger transition-colors hover:border-danger/50 hover:bg-danger/10"
+          >
+            删除路径关键帧
+          </button>
+        </section>
+      )}
+
       <button
         type="button"
         onClick={() => deleteLayer(layer.id)}
         className="flex h-9 w-full items-center justify-center gap-2 rounded-md border border-danger/25 bg-danger/5 text-xs font-medium text-danger transition-colors hover:border-danger/50 hover:bg-danger/10 focus-visible:outline-2 focus-visible:outline-primary"
       >
         <Trash2 className="size-3.5" />
-        删除图层
+        {layer.kind === "group" ? "删除编组" : "删除图层"}
       </button>
     </div>
   );
@@ -416,6 +656,75 @@ function NumberField({
         {suffix && <span className="shrink-0 text-[9px] text-muted">{suffix}</span>}
       </span>
     </label>
+  );
+}
+
+function PaintField({
+  label,
+  value,
+  enabled,
+  onToggle,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  enabled: boolean;
+  onToggle: () => void;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-surface-2/25 p-2">
+      <div className="mb-1.5 flex items-center justify-between gap-1">
+        <span className="truncate text-[10px] font-medium text-fg">{label}</span>
+        <CompactSwitch label={label} enabled={enabled} onToggle={onToggle} />
+      </div>
+      <label
+        className={`flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-border bg-bg/70 px-1.5 transition-colors hover:border-primary/35 focus-within:border-primary/65 focus-within:ring-2 focus-within:ring-primary/10 ${enabled ? "" : "cursor-not-allowed opacity-50"}`}
+      >
+        <input
+          aria-label={`${label}颜色`}
+          type="color"
+          value={value === "none" ? "#000000" : value}
+          disabled={!enabled}
+          onChange={(event) => onChange(event.target.value)}
+          className="inspector-color-input"
+        />
+        <span className="ml-auto min-w-0 truncate font-mono text-[9px] text-fg">
+          {value === "none" ? "无" : value.toUpperCase()}
+        </span>
+      </label>
+    </div>
+  );
+}
+
+function CompactSwitch({
+  label,
+  enabled,
+  onToggle,
+}: {
+  label: string;
+  enabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      aria-label={`启用${label}`}
+      title={`${enabled ? "关闭" : "启用"}${label}`}
+      onClick={onToggle}
+      className="flex h-7 shrink-0 items-center gap-1.5 rounded px-1 text-[9px] text-muted transition-colors hover:bg-surface-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+    >
+      <span>{enabled ? "开启" : "关闭"}</span>
+      <span
+        className={`relative inline-flex h-4 w-7 items-center rounded-full border transition-colors duration-150 ${enabled ? "border-primary bg-primary/80" : "border-border-strong bg-bg"}`}
+      >
+        <span
+          className={`size-3 rounded-full bg-white transition-transform duration-150 ${enabled ? "translate-x-3.5" : "translate-x-0.5"}`}
+        />
+      </span>
+    </button>
   );
 }
 

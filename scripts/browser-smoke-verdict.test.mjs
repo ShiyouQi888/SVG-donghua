@@ -278,7 +278,7 @@ test("baselineComparison fails closed on malformed or wrong-shape baselines", ()
 
 test("parseSmokeArgs defaults", () => {
   assert.deepEqual(parseSmokeArgs([], {}), {
-    url: "http://127.0.0.1:8080/",
+    url: "http://127.0.0.1:3100/",
     outPng: "/workspace/screenshots/app-builder-preview.png",
     baseline: "",
   });
@@ -314,7 +314,7 @@ test("parseSmokeArgs supports the --baseline= form", () => {
 test("parseSmokeArgs rejects unknown flags instead of treating them as positionals", () => {
   assert.deepEqual(parseSmokeArgs(["--nope"], {}), { error: "unknown flag: --nope" });
   assert.deepEqual(
-    parseSmokeArgs(["http://127.0.0.1:8080/", "--Baseline", "/workspace/a.json"], {}),
+    parseSmokeArgs(["http://127.0.0.1:3100/", "--Baseline", "/workspace/a.json"], {}),
     {
       error: "unknown flag: --Baseline",
     },

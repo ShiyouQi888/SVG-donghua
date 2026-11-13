@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -17,7 +18,13 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Flag,
+  Folder,
+  FolderMinus,
+  FolderPlus,
   GripVertical,
+  CircleDot,
+  Link2,
   LockKeyhole,
   LockKeyholeOpen,
   Magnet,
@@ -26,6 +33,7 @@ import {
   Play,
   Repeat,
   ScanLine,
+  Scissors,
   Square,
   Spline,
   StepBack,
@@ -44,12 +52,15 @@ import {
   fmtRulerTime,
   fmtTime,
   keyNear,
+  layerClipRange,
+  layerIsLocked,
   numberToColor,
   snapTime,
   type Keyframe,
   type Layer,
   type Interp,
   type PropKey,
+  type PathKeyframe,
 } from "@/lib/animator/model";
 import {
   type CopiedKeyframe,
@@ -59,6 +70,7 @@ import {
 } from "@/lib/animator/store";
 import { KeyNav } from "./KeyNav";
 import { TimelineClip } from "./TimelineClip";
+import { ValueGraphEditor } from "./ValueGraphEditor";
 
 const LABEL_W = 280;
 const FIT_MODE_KEY = "kairo-timeline-zoom-mode";
@@ -67,12 +79,7 @@ const HEIGHT_KEY = "kairo-timeline-height";
 const MIN_TIMELINE_HEIGHT = 160;
 type TimeDisplayMode = "timecode" | "frames";
 type TimelineProp = PropKey | "position" | "scaleVector";
-const TIMELINE_TRANSFORM_PROPS: TimelineProp[] = [
-  "opacity",
-  "position",
-  "rotate",
-  "scaleVector",
-];
+const TIMELINE_TRANSFORM_PROPS: TimelineProp[] = ["opacity", "position", "rotate", "scaleVector"];
 const INTERPOLATION_MENU: { value: Interp; label: string }[] = [
   { value: "linear", label: "线性" },
   { value: "ease", label: "缓入缓出" },
@@ -114,6 +121,29 @@ type TimelineKeyDrag = {
   keys: KeyframeMove[];
 };
 
+type TimelineLayerRow = { layer: Layer; depth: number };
+
+function buildTimelineLayerRows(
+  layers: Layer[],
+  expanded: Record<string, boolean>,
+): TimelineLayerRow[] {
+  const ordered = [...layers].reverse();
+  const groups = new Set(layers.filter((layer) => layer.kind === "group").map((layer) => layer.id));
+  const rows: TimelineLayerRow[] = [];
+  const visit = (layer: Layer, depth: number, path: Set<string>) => {
+    if (path.has(layer.id)) return;
+    rows.push({ layer, depth });
+    if (layer.kind !== "group" || expanded[layer.id] === false) return;
+    const nextPath = new Set(path).add(layer.id);
+    for (const child of ordered.filter((item) => item.groupId === layer.id))
+      visit(child, depth + 1, nextPath);
+  };
+  for (const layer of ordered) {
+    if (!layer.groupId || !groups.has(layer.groupId)) visit(layer, 0, new Set());
+  }
+  return rows;
+}
+
 function frameToX(frame: number, pxPerSecond: number, fps: number): number {
   return (frame * pxPerSecond) / fps;
 }
@@ -136,6 +166,78 @@ function formatRulerTime(frame: number, fps: number, mode: TimeDisplayMode): str
   return fmtRulerTime(frame / fps, fps);
 }
 
+function TimelineMarkerChip({
+  marker,
+  left,
+  fps,
+  onMove,
+  onSeek,
+  onRename,
+  onRemove,
+  timeFromClient,
+  format,
+}: {
+  marker: { id: string; t: number; name: string };
+  left: number;
+  fps: number;
+  onMove: (time: number) => void;
+  onSeek: () => void;
+  onRename: (name: string) => void;
+  onRemove: () => void;
+  timeFromClient: (clientX: number) => number;
+  format: (time: number) => string;
+}) {
+  return (
+    <button
+      type="button"
+      data-marker={marker.id}
+      aria-label={`${marker.name} · ${format(marker.t)}`}
+      title={`${marker.name} · ${format(marker.t)} · 拖动移动，双击重命名，右键删除`}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        onSeek();
+      }}
+      onPointerMove={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId))
+          onMove(timeFromClient(event.clientX));
+      }}
+      onPointerUp={(event) => {
+        event.stopPropagation();
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+      onPointerCancel={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const name = window.prompt("标记名称", marker.name);
+        if (name !== null) onRename(name);
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        if (window.confirm(`删除标记“${marker.name}”？`)) onRemove();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        onMove(marker.t + (event.key === "ArrowLeft" ? -1 : 1) / fps);
+      }}
+      className="absolute inset-y-0 z-10 grid w-5 -translate-x-1/2 place-items-center text-key hover:text-fg focus-visible:outline-1 focus-visible:outline-primary"
+      style={{ left }}
+    >
+      <Flag className="size-3 fill-current" />
+    </button>
+  );
+}
+
 export function Timeline() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrub = useRef(false);
@@ -149,6 +251,7 @@ export function Timeline() {
   const [fitWidth, setFitWidth] = useState(true);
   const [timelineHeight, setTimelineHeight] = useState<number | null>(null);
   const [timeDisplayMode, setTimeDisplayMode] = useState<TimeDisplayMode>("timecode");
+  const [graphMode, setGraphMode] = useState(false);
   const [timeDisplayReady, setTimeDisplayReady] = useState(false);
 
   useEffect(() => {
@@ -202,7 +305,9 @@ export function Timeline() {
   const time = useDoc((s) => s.time);
   const px = useDoc((s) => s.pxPerSec);
   const selectedId = useDoc((s) => s.selectedId);
+  const selectedLayerIds = useDoc((s) => s.selectedLayerIds);
   const selectedKeys = useDoc((s) => s.selectedKeys);
+  const addPathKey = useDoc((s) => s.addPathKey);
   const playing = useDoc((s) => s.playing);
   const loop = useDoc((s) => s.loop);
   const autoKey = useDoc((s) => s.autoKey);
@@ -210,6 +315,8 @@ export function Timeline() {
   const safeArea = useDoc((s) => s.safeArea);
   const motionBlur = useDoc((s) => s.motionBlur);
   const motionBlurStrength = useDoc((s) => s.motionBlurStrength);
+  const markers = useDoc((s) => s.markers);
+  const workArea = useDoc((s) => s.workArea);
   const setTime = useDoc((s) => s.setTime);
   const togglePlay = useDoc((s) => s.togglePlay);
   const stepFrame = (direction: -1 | 1) => {
@@ -225,6 +332,16 @@ export function Timeline() {
   const toggleSnap = useDoc((s) => s.toggleSnap);
   const toggleSafeArea = useDoc((s) => s.toggleSafeArea);
   const toggleMotionBlur = useDoc((s) => s.toggleMotionBlur);
+  const splitLayerAtTime = useDoc((s) => s.splitLayerAtTime);
+  const rippleDeleteLayer = useDoc((s) => s.rippleDeleteLayer);
+  const addMarker = useDoc((s) => s.addMarker);
+  const moveMarker = useDoc((s) => s.moveMarker);
+  const removeMarker = useDoc((s) => s.removeMarker);
+  const renameMarker = useDoc((s) => s.renameMarker);
+  const setWorkAreaEdge = useDoc((s) => s.setWorkAreaEdge);
+  const clearWorkArea = useDoc((s) => s.clearWorkArea);
+  const toggleLayerLocked = useDoc((s) => s.toggleLayerLocked);
+  const toggleLayerSolo = useDoc((s) => s.toggleLayerSolo);
   const setMotionBlurStrength = useDoc((s) => s.setMotionBlurStrength);
   const punchKeys = useDoc((s) => s.punchKeys);
   const selectLayer = useDoc((s) => s.selectLayer);
@@ -234,7 +351,29 @@ export function Timeline() {
   const setSelectedInterpolation = useDoc((s) => s.setSelectedInterpolation);
   const deleteSelectedKey = useDoc((s) => s.deleteSelectedKey);
   const moveLayer = useDoc((s) => s.moveLayer);
+  const createGroup = useDoc((s) => s.createGroup);
+  const ungroupLayer = useDoc((s) => s.ungroupLayer);
   const selectedLayerIndex = selectedId ? layers.findIndex((layer) => layer.id === selectedId) : -1;
+  const selectedLayer = selectedId ? layers.find((layer) => layer.id === selectedId) : undefined;
+  const selectedLayers = selectedLayerIds
+    .map((id) => layers.find((layer) => layer.id === id))
+    .filter((layer): layer is Layer => Boolean(layer));
+  const canGroupSelection =
+    selectedLayers.length >= 2 &&
+    selectedLayers.every((layer) => layer.groupId === selectedLayers[0].groupId);
+  const timelineLayerRows = useMemo(
+    () => buildTimelineLayerRows(layers, expanded),
+    [layers, expanded],
+  );
+  const selectedClip = selectedLayer ? layerClipRange(selectedLayer, duration, fps) : undefined;
+  const canSplit = Boolean(
+    selectedLayer &&
+    !layerIsLocked(selectedLayer, layers) &&
+    selectedLayer.kind !== "group" &&
+    selectedClip &&
+    time > selectedClip.inPoint + 0.5 / fps &&
+    time < selectedClip.outPoint - 0.5 / fps,
+  );
 
   const copySelectedKeys = useCallback(() => {
     const state = useDoc.getState();
@@ -345,6 +484,8 @@ export function Timeline() {
     if (event.button !== 0 || clickedKeys.length === 0 || !scrollRef.current) return;
     event.preventDefault();
     const state = useDoc.getState();
+    if (clickedKeys.some((key) => state.layers.find((layer) => layer.id === key.layerId)?.locked))
+      return;
     const alreadySelected = clickedKeys.every((key) =>
       state.selectedKeys.some(
         (item) => item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
@@ -438,16 +579,103 @@ export function Timeline() {
           aria-label={`当前时间 ${formatTimelineTime(time, fps, timeDisplayMode)}，总时长 ${formatTimelineTime(duration, fps, timeDisplayMode)}，${fps}fps`}
           className="font-mono text-xs text-muted tabular-nums"
         >
-          {formatTimelineTime(time, fps, timeDisplayMode)} / {formatTimelineTime(duration, fps, timeDisplayMode)} · {fps}fps
+          {formatTimelineTime(time, fps, timeDisplayMode)} /{" "}
+          {formatTimelineTime(duration, fps, timeDisplayMode)} · {fps}fps
         </span>
+        <div
+          role="group"
+          aria-label="剪辑与标记"
+          className="flex shrink-0 items-center gap-1 border-l border-border pl-2"
+        >
+          <button
+            type="button"
+            disabled={!canSplit}
+            onClick={() => selectedId && splitLayerAtTime(selectedId, time)}
+            title="在播放头分割选中片段"
+            className="flex h-7 items-center gap-1 rounded border border-border px-1.5 text-[10px] text-muted hover:bg-surface-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            <Scissors className="size-3" />
+            分割
+          </button>
+          <button
+            type="button"
+            disabled={
+              !selectedLayer ||
+              selectedLayer.kind === "group" ||
+              layerIsLocked(selectedLayer, layers)
+            }
+            onClick={() => selectedId && rippleDeleteLayer(selectedId)}
+            title="删除选中片段，并将后续片段前移"
+            className="flex h-7 items-center gap-1 rounded border border-border px-1.5 text-[10px] text-muted hover:border-danger/40 hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            <Trash2 className="size-3" />
+            波纹删除
+          </button>
+          <button
+            type="button"
+            onClick={() => addMarker(time)}
+            title="在播放头添加标记"
+            className="flex h-7 items-center gap-1 rounded border border-border px-1.5 text-[10px] text-muted hover:bg-surface-2 hover:text-fg"
+          >
+            <Flag className="size-3" />
+            标记
+          </button>
+          <span className="ml-1 hidden font-mono text-[9px] text-muted xl:inline">
+            {workArea
+              ? `${formatTimelineTime(workArea.start, fps, timeDisplayMode)}–${formatTimelineTime(workArea.end, fps, timeDisplayMode)}`
+              : "全时长"}
+          </span>
+          <button
+            type="button"
+            aria-label="将播放头设为工作区入点"
+            title="将播放头设为工作区入点"
+            onClick={() => setWorkAreaEdge("start", time)}
+            className={`grid size-7 place-items-center rounded border text-[10px] ${workArea ? "border-primary/40 text-primary" : "border-border text-muted hover:bg-surface-2 hover:text-fg"}`}
+          >
+            入
+          </button>
+          <button
+            type="button"
+            aria-label="将播放头设为工作区出点"
+            title="将播放头设为工作区出点"
+            onClick={() => setWorkAreaEdge("end", time)}
+            className={`grid size-7 place-items-center rounded border text-[10px] ${workArea ? "border-primary/40 text-primary" : "border-border text-muted hover:bg-surface-2 hover:text-fg"}`}
+          >
+            出
+          </button>
+          {workArea && (
+            <button
+              type="button"
+              onClick={clearWorkArea}
+              title="清除工作区，恢复全时长预览"
+              className="grid size-7 place-items-center rounded text-muted hover:bg-surface-2 hover:text-fg"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          )}
+        </div>
         <button
           type="button"
-          disabled={!selectedId}
+          disabled={!selectedId || selectedLayer?.kind === "group"}
           onClick={() => selectedId && punchKeys(selectedId)}
           className="rounded-md bg-key px-2.5 py-1 text-xs font-medium text-bg disabled:opacity-40"
-          title="给已开秒表的属性在播放头打 K；若都没开，则五个属性一起打"
+          title={
+            selectedLayer?.kind === "group"
+              ? "编组是组织容器，不添加关键帧"
+              : "给已开秒表的属性在播放头打 K；若都没开，则五个属性一起打"
+          }
         >
           打 K 帧
+        </button>
+        <button
+          type="button"
+          aria-pressed={graphMode}
+          onClick={() => setGraphMode((value) => !value)}
+          title="切换时间线与数值曲线编辑器"
+          className={`flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] ${graphMode ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted hover:bg-surface-2 hover:text-fg"}`}
+        >
+          <Spline className="size-3.5" />
+          曲线
         </button>
         <button
           type="button"
@@ -492,7 +720,10 @@ export function Timeline() {
             <Waves className="size-3.5" />
             运动模糊
           </button>
-          <label className="flex shrink-0 items-center gap-1 text-[10px] text-muted" title="运动模糊强度">
+          <label
+            className="flex shrink-0 items-center gap-1 text-[10px] text-muted"
+            title="运动模糊强度"
+          >
             强度
             <input
               type="range"
@@ -511,7 +742,7 @@ export function Timeline() {
         <div
           role="group"
           aria-label="播放控制"
-          className="mx-auto flex h-9 shrink-0 items-center gap-0.5 2xl:absolute 2xl:left-1/2 2xl:top-1/2 2xl:z-20 2xl:-translate-x-1/2 2xl:-translate-y-1/2"
+          className="mx-auto flex h-9 shrink-0 items-center gap-0.5"
         >
           <button
             type="button"
@@ -610,7 +841,12 @@ export function Timeline() {
         className="app-scrollbar timeline-scroll relative min-h-0 flex-1 overflow-auto"
         onPointerDown={(event) => {
           const target = event.target as HTMLElement;
-          if (target.closest("[data-key]") || target.closest("[data-label]")) return;
+          if (
+            target.closest("[data-key]") ||
+            target.closest("[data-label]") ||
+            target.closest("[data-marker]")
+          )
+            return;
           if (target.closest("[data-track-area]")) {
             if (event.button !== 0 || !scrollRef.current) return;
             event.preventDefault();
@@ -646,7 +882,11 @@ export function Timeline() {
           ) {
             const rect = scrollRef.current.getBoundingClientRect();
             const x =
-              event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth - drag.pointerOffsetX;
+              event.clientX -
+              rect.left +
+              scrollRef.current.scrollLeft -
+              labelWidth -
+              drag.pointerOffsetX;
             const targetState = useDoc.getState();
             const targetTime = xToTime(x, timelinePx, targetState.duration, targetState.fps);
             useDoc.getState().moveKeys(drag.keys, targetTime - drag.startTime);
@@ -707,17 +947,27 @@ export function Timeline() {
                   if (key.dataset.keyPair === "true") {
                     return [
                       ...(key.dataset.pairPrimaryId
-                        ? [{ layerId, prop: key.dataset.prop as PropKey, id: key.dataset.pairPrimaryId }]
+                        ? [
+                            {
+                              layerId,
+                              prop: key.dataset.prop as PropKey,
+                              id: key.dataset.pairPrimaryId,
+                            },
+                          ]
                         : []),
                       ...(key.dataset.pairSecondaryId
-                        ? [{ layerId, prop: key.dataset.pairSecondaryProp as PropKey, id: key.dataset.pairSecondaryId }]
+                        ? [
+                            {
+                              layerId,
+                              prop: key.dataset.pairSecondaryProp as PropKey,
+                              id: key.dataset.pairSecondaryId,
+                            },
+                          ]
                         : []),
                     ];
                   }
                   const id = key.dataset.keyId ?? "";
-                  return layerId && id
-                    ? [{ layerId, prop: key.dataset.prop as PropKey, id }]
-                    : [];
+                  return layerId && id ? [{ layerId, prop: key.dataset.prop as PropKey, id }] : [];
                 });
               const combined = start.additive
                 ? [
@@ -823,6 +1073,32 @@ export function Timeline() {
                   <ArrowDownToLine className="size-3.5" />
                 </button>
               </div>
+              <div className="flex shrink-0 items-center gap-0.5 border-l border-border pl-1">
+                {selectedLayer?.kind === "group" ? (
+                  <button
+                    type="button"
+                    aria-label="取消编组"
+                    title="取消编组"
+                    onClick={() => ungroupLayer(selectedLayer.id)}
+                    className="grid size-6 place-items-center rounded text-muted hover:bg-surface hover:text-fg"
+                  >
+                    <FolderMinus className="size-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    aria-label="将所选图层编组"
+                    title={
+                      canGroupSelection ? "将所选图层编组" : "按住 Ctrl / Shift 选择同级图层后编组"
+                    }
+                    disabled={!canGroupSelection}
+                    onClick={() => createGroup(selectedLayerIds)}
+                    className="grid size-6 place-items-center rounded text-muted hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    <FolderPlus className="size-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
             <Ruler
               duration={duration}
@@ -833,175 +1109,341 @@ export function Timeline() {
             />
           </div>
 
-          {layers.length === 0 && (
+          {workArea && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-0 top-7 z-0 border-x border-primary/20 bg-primary/[0.035]"
+              style={{
+                left: labelWidth + timeToX(workArea.start, timelinePx, fps),
+                width: Math.max(1, timeToX(workArea.end - workArea.start, timelinePx, fps)),
+              }}
+            />
+          )}
+
+          <div className="flex h-6 border-b border-border/80 bg-surface/90">
+            <div
+              data-label
+              className="sticky left-0 z-10 flex shrink-0 items-center justify-between border-r border-border bg-surface px-2 text-[10px] text-muted"
+              style={{ width: labelWidth }}
+            >
+              <span>标记</span>
+              <span className="font-mono">{markers.length}</span>
+            </div>
+            <div className="timeline-track-grid relative h-full" data-track-area style={{ width }}>
+              {markers.map((marker) => (
+                <TimelineMarkerChip
+                  key={marker.id}
+                  marker={marker}
+                  left={timeToX(marker.t, timelinePx, fps)}
+                  fps={fps}
+                  onMove={(next) => moveMarker(marker.id, next)}
+                  onSeek={() => setTime(marker.t)}
+                  onRename={(name) => renameMarker(marker.id, name)}
+                  onRemove={() => removeMarker(marker.id)}
+                  timeFromClient={timeFromClient}
+                  format={(value) => formatTimelineTime(value, fps, timeDisplayMode)}
+                />
+              ))}
+            </div>
+          </div>
+
+          {graphMode && (
+            <ValueGraphEditor
+              layer={selectedLayer}
+              duration={duration}
+              fps={fps}
+              labelWidth={labelWidth}
+              width={labelWidth + width}
+            />
+          )}
+
+          {!graphMode && layers.length === 0 && (
             <p className="px-3 py-6 text-sm text-muted">
               还没有图层。添加形状后，在这里展开属性并打 K。
             </p>
           )}
 
-          {[...layers].reverse().map((layer) => {
-            const open = expanded[layer.id] === true;
-            const transformKey = `${layer.id}:transform`;
-            const transformOpen = expanded[transformKey] !== false;
-            const appearanceKey = `${layer.id}:appearance`;
-            const appearanceOpen = expanded[appearanceKey] !== false;
-            const groups: {
-              key: string;
-              label: string;
-              props: readonly TimelineProp[];
-              open: boolean;
-            }[] = [
-              {
-                key: transformKey,
-                label: "变换",
-                props: TIMELINE_TRANSFORM_PROPS,
-                open: transformOpen,
-              },
-              { key: appearanceKey, label: "外观", props: STYLE_PROPS, open: appearanceOpen },
-            ];
-            const keyCount = PROPS.reduce((n, prop) => n + layer.tracks[prop].length, 0);
-            return (
-              <div key={layer.id}>
-                <div
-                  data-layer-row-id={layer.id}
-                  className={`timeline-layer-row flex h-8 border-b border-border ${layer.id === selectedId ? "is-active" : ""}`}
-                >
+          {!graphMode &&
+            timelineLayerRows.map(({ layer, depth }) => {
+              const isGroup = layer.kind === "group";
+              const open = isGroup ? expanded[layer.id] !== false : expanded[layer.id] === true;
+              const transformKey = `${layer.id}:transform`;
+              const transformOpen = expanded[transformKey] !== false;
+              const appearanceKey = `${layer.id}:appearance`;
+              const appearanceOpen = expanded[appearanceKey] !== false;
+              const groups: {
+                key: string;
+                label: string;
+                props: readonly TimelineProp[];
+                open: boolean;
+              }[] = [
+                {
+                  key: transformKey,
+                  label: "变换",
+                  props: TIMELINE_TRANSFORM_PROPS,
+                  open: transformOpen,
+                },
+                { key: appearanceKey, label: "外观", props: STYLE_PROPS, open: appearanceOpen },
+              ];
+              const keyCount = isGroup
+                ? 0
+                : PROPS.reduce((n, prop) => n + layer.tracks[prop].length, 0) +
+                  (layer.pathKeys?.length ?? 0);
+              const groupChildren = isGroup
+                ? layers.filter((item) => item.groupId === layer.id)
+                : [];
+              const parentName = layer.parentId
+                ? layers.find((item) => item.id === layer.parentId)?.name
+                : undefined;
+              const inheritedLock = layerIsLocked(layer, layers) && !layer.locked;
+              const groupIn = groupChildren.length
+                ? Math.min(
+                    ...groupChildren.map((item) => layerClipRange(item, duration, fps).inPoint),
+                  )
+                : 0;
+              const groupOut = groupChildren.length
+                ? Math.max(
+                    ...groupChildren.map((item) => layerClipRange(item, duration, fps).outPoint),
+                  )
+                : 0;
+              return (
+                <div key={layer.id}>
                   <div
-                    data-label
-                    className={`timeline-layer-label sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface px-1 ${layer.id === selectedId ? "is-active" : ""}`}
-                    style={{ width: labelWidth }}
+                    data-layer-row-id={layer.id}
+                    className={`timeline-layer-row flex h-8 border-b border-border ${selectedLayerIds.includes(layer.id) ? "is-active" : ""} ${isGroup ? "bg-surface-2/45" : ""}`}
                   >
-                    <button
-                      type="button"
-                      aria-label={open ? "折叠" : "展开"}
-                      onClick={() => toggleExpanded(layer.id)}
-                      className="grid size-7 place-items-center text-muted"
+                    <div
+                      data-label
+                      className={`timeline-layer-label sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface px-1 ${selectedLayerIds.includes(layer.id) ? "is-active" : ""}`}
+                      style={{ width: labelWidth }}
                     >
-                      {open ? (
-                        <ChevronDown className="size-3.5" />
-                      ) : (
-                        <ChevronRight className="size-3.5" />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={layer.visible ? "隐藏" : "显示"}
-                      onClick={() => toggleVisible(layer.id)}
-                      className="grid size-7 place-items-center text-muted"
-                    >
-                      {layer.visible ? (
-                        <Eye className="size-3.5" />
-                      ) : (
-                        <EyeOff className="size-3.5" />
-                      )}
-                    </button>
-                    <TimelineLayerOrderHandle layerId={layer.id} />
-                    <TimelineLayerName
-                      layer={layer}
-                      selected={layer.id === selectedId}
-                      onSelect={() => selectLayer(layer.id)}
-                    />
-                    {keyCount > 0 && (
-                      <span className="mr-1 font-mono text-xs text-key">{keyCount}</span>
-                    )}
-                  </div>
-                  <div
-                    className="timeline-track-grid relative h-full"
-                    style={{ width, backgroundSize: `${timelinePx}px 100%` }}
-                  >
-                    <TimelineClip
-                      layer={layer}
-                      duration={duration}
-                      fps={fps}
-                      px={timelinePx}
-                      selected={layer.id === selectedId}
-                      timeDisplayMode={timeDisplayMode}
-                    />
-                  </div>
-                </div>
-                {open &&
-                  groups.map((group) => (
-                    <div key={group.key}>
-                      <div className="flex h-7 border-b border-border/70 bg-surface-2/35">
-                        <div
-                          data-label
-                          className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface-2/70 pl-4"
-                          style={{ width: labelWidth }}
+                      <button
+                        type="button"
+                        aria-label={
+                          open
+                            ? isGroup
+                              ? "折叠编组"
+                              : "折叠属性"
+                            : isGroup
+                              ? "展开编组"
+                              : "展开属性"
+                        }
+                        onClick={() => toggleExpanded(layer.id)}
+                        className="grid size-7 place-items-center text-muted"
+                      >
+                        {open ? (
+                          <ChevronDown className="size-3.5" />
+                        ) : (
+                          <ChevronRight className="size-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={layer.visible ? "隐藏" : "显示"}
+                        onClick={() => toggleVisible(layer.id)}
+                        className="grid size-7 place-items-center text-muted"
+                      >
+                        {layer.visible ? (
+                          <Eye className="size-3.5" />
+                        ) : (
+                          <EyeOff className="size-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={
+                          inheritedLock ? "图层由编组锁定" : layer.locked ? "解锁图层" : "锁定图层"
+                        }
+                        aria-pressed={Boolean(layer.locked)}
+                        title={
+                          inheritedLock
+                            ? "此图层由上级编组锁定；请在编组行解锁"
+                            : layer.locked
+                              ? "已锁定：解锁以编辑图层"
+                              : "锁定图层，阻止画布、片段和关键帧编辑"
+                        }
+                        disabled={inheritedLock}
+                        onClick={() => toggleLayerLocked(layer.id)}
+                        className={`grid size-6 shrink-0 place-items-center rounded disabled:cursor-not-allowed disabled:opacity-50 ${layer.locked || inheritedLock ? "text-primary" : "text-muted hover:bg-surface hover:text-fg"}`}
+                      >
+                        {layer.locked || inheritedLock ? (
+                          <LockKeyhole className="size-3.5" />
+                        ) : (
+                          <LockKeyholeOpen className="size-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={layer.solo ? "取消独奏图层" : "独奏图层"}
+                        aria-pressed={Boolean(layer.solo)}
+                        title={layer.solo ? "独奏已开启，点击取消" : "独奏此图层"}
+                        onClick={() => toggleLayerSolo(layer.id)}
+                        className={`grid size-6 shrink-0 place-items-center rounded ${layer.solo ? "bg-key/15 text-key" : "text-muted hover:bg-surface hover:text-fg"}`}
+                      >
+                        <CircleDot className={`size-3.5 ${layer.solo ? "fill-current" : ""}`} />
+                      </button>
+                      <TimelineLayerOrderHandle layerId={layer.id} />
+                      {isGroup && <Folder className="size-3.5 shrink-0 text-primary" />}
+                      <TimelineLayerName
+                        layer={layer}
+                        selected={selectedLayerIds.includes(layer.id)}
+                        depth={depth}
+                        onSelect={(mode) => selectLayer(layer.id, mode)}
+                      />
+                      {layer.kind === "path" && (
+                        <button
+                          type="button"
+                          title="在当前时间添加路径关键帧"
+                          aria-label="添加路径关键帧"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            addPathKey(layer.id);
+                          }}
+                          className="ml-1 rounded border border-key/30 px-1 text-[9px] font-semibold leading-4 text-key hover:bg-key/10"
                         >
-                          <button
-                            type="button"
-                            aria-label={
-                              group.open ? `折叠${group.label}属性` : `展开${group.label}属性`
-                            }
-                            aria-expanded={group.open}
-                            onClick={() => toggleExpanded(group.key)}
-                            className="grid size-5 place-items-center text-muted hover:text-fg"
+                          K
+                        </button>
+                      )}
+                      {parentName && (
+                        <span title={`父级：${parentName}`}>
+                          <Link2
+                            aria-label={`父级：${parentName}`}
+                            className="size-3 shrink-0 text-primary/75"
+                          />
+                        </span>
+                      )}
+                      {keyCount > 0 && (
+                        <span className="mr-1 font-mono text-xs text-key">{keyCount}</span>
+                      )}
+                    </div>
+                    <div
+                      className="timeline-track-grid relative h-full"
+                      style={{ width, backgroundSize: `${timelinePx}px 100%` }}
+                    >
+                      {isGroup ? (
+                        groupChildren.length > 0 && (
+                          <div
+                            data-group-band={layer.id}
+                            className="absolute inset-y-1 flex items-center overflow-hidden rounded border border-primary/25 bg-primary/[0.07] px-1.5 text-[9px] text-primary/75"
+                            style={{
+                              left: Math.round(groupIn * timelinePx),
+                              width: Math.max(18, Math.round((groupOut - groupIn) * timelinePx)),
+                            }}
                           >
-                            {group.open ? (
-                              <ChevronDown className="size-3" />
-                            ) : (
-                              <ChevronRight className="size-3" />
-                            )}
-                          </button>
-                          <span className="text-[11px] font-medium text-muted">{group.label}</span>
+                            <span className="truncate">
+                              {layer.name} · {groupChildren.length}
+                            </span>
+                          </div>
+                        )
+                      ) : (
+                        <TimelineClip
+                          layer={layer}
+                          duration={duration}
+                          fps={fps}
+                          px={timelinePx}
+                          selected={selectedLayerIds.includes(layer.id)}
+                          locked={layerIsLocked(layer, layers)}
+                          timeDisplayMode={timeDisplayMode}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  {!isGroup &&
+                    open &&
+                    groups.map((group) => (
+                      <div key={group.key}>
+                        <div className="flex h-7 border-b border-border/70 bg-surface-2/35">
+                          <div
+                            data-label
+                            className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface-2/70 pl-4"
+                            style={{ width: labelWidth }}
+                          >
+                            <button
+                              type="button"
+                              aria-label={
+                                group.open ? `折叠${group.label}属性` : `展开${group.label}属性`
+                              }
+                              aria-expanded={group.open}
+                              onClick={() => toggleExpanded(group.key)}
+                              className="grid size-5 place-items-center text-muted hover:text-fg"
+                            >
+                              {group.open ? (
+                                <ChevronDown className="size-3" />
+                              ) : (
+                                <ChevronRight className="size-3" />
+                              )}
+                            </button>
+                            <span className="text-[11px] font-medium text-muted">
+                              {group.label}
+                            </span>
+                          </div>
+                          <div className="h-full" style={{ width }} />
                         </div>
-                        <div className="h-full" style={{ width }} />
-                      </div>
-                      {group.open &&
-                        group.props.map((prop) => {
-                          const onContextMenu = (keys: SelectedKey[], x: number, y: number) => {
-                            const current = useDoc.getState().selectedKeys;
-                            const alreadySelected = keys.every((key) =>
-                              current.some(
-                                (selected) =>
-                                  selected.layerId === key.layerId &&
-                                  selected.prop === key.prop &&
-                                  selected.id === key.id,
-                              ),
-                            );
-                            if (!alreadySelected) useDoc.getState().selectKeys(keys);
-                            setKeyMenu({ x, y });
-                          };
-                          if (prop === "position" || prop === "scaleVector") {
+                        {group.open &&
+                          group.props.map((prop) => {
+                            const onContextMenu = (keys: SelectedKey[], x: number, y: number) => {
+                              const current = useDoc.getState().selectedKeys;
+                              const alreadySelected = keys.every((key) =>
+                                current.some(
+                                  (selected) =>
+                                    selected.layerId === key.layerId &&
+                                    selected.prop === key.prop &&
+                                    selected.id === key.id,
+                                ),
+                              );
+                              if (!alreadySelected) useDoc.getState().selectKeys(keys);
+                              setKeyMenu({ x, y });
+                            };
+                            if (prop === "position" || prop === "scaleVector") {
+                              return (
+                                <VectorTrack
+                                  key={prop}
+                                  layerId={layer.id}
+                                  vector={prop}
+                                  width={width}
+                                  px={timelinePx}
+                                  labelWidth={labelWidth}
+                                  timeDisplayMode={timeDisplayMode}
+                                  selected={selectedKeys.filter((key) => key.layerId === layer.id)}
+                                  onContextMenu={onContextMenu}
+                                  onBeginMove={beginKeyMove}
+                                />
+                              );
+                            }
                             return (
-                              <VectorTrack
+                              <PropTrack
                                 key={prop}
                                 layerId={layer.id}
-                                vector={prop}
+                                prop={prop}
                                 width={width}
                                 px={timelinePx}
                                 labelWidth={labelWidth}
                                 timeDisplayMode={timeDisplayMode}
-                                selected={selectedKeys.filter((key) => key.layerId === layer.id)}
+                                selected={selectedKeys
+                                  .filter((key) => key.layerId === layer.id && key.prop === prop)
+                                  .map((key) => key.id)}
                                 onContextMenu={onContextMenu}
                                 onBeginMove={beginKeyMove}
                               />
                             );
-                          }
-                          return (
-                            <PropTrack
-                              key={prop}
-                              layerId={layer.id}
-                              prop={prop}
-                              width={width}
-                              px={timelinePx}
-                              labelWidth={labelWidth}
-                              timeDisplayMode={timeDisplayMode}
-                              selected={selectedKeys
-                                .filter((key) => key.layerId === layer.id && key.prop === prop)
-                                .map((key) => key.id)}
-                              onContextMenu={onContextMenu}
-                              onBeginMove={beginKeyMove}
-                            />
-                          );
-                        })}
-                    </div>
-                  ))}
-              </div>
-            );
-          })}
+                          })}
+                      </div>
+                    ))}
+                  {!isGroup && open && layer.kind === "path" && (
+                    <PathTrack
+                      layer={layer}
+                      width={width}
+                      px={timelinePx}
+                      labelWidth={labelWidth}
+                      fps={fps}
+                      timeDisplayMode={timeDisplayMode}
+                    />
+                  )}
+                </div>
+              );
+            })}
 
-          {marquee && (marquee.width >= 3 || marquee.height >= 3) && (
+          {!graphMode && marquee && (marquee.width >= 3 || marquee.height >= 3) && (
             <div
               className="timeline-key-marquee pointer-events-none absolute z-40"
               style={{
@@ -1130,7 +1572,8 @@ function TimelineLayerOrderHandle({ layerId }: { layerId: string }) {
     if (!active || active.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
-    const target = document.elementFromPoint(event.clientX, event.clientY)
+    const target = document
+      .elementFromPoint(event.clientX, event.clientY)
       ?.closest<HTMLElement>("[data-layer-row-id]");
     const targetId = target?.dataset.layerRowId;
     if (!target || !targetId || targetId === layerId) return;
@@ -1170,11 +1613,13 @@ function TimelineLayerOrderHandle({ layerId }: { layerId: string }) {
 function TimelineLayerName({
   layer,
   selected,
+  depth,
   onSelect,
 }: {
   layer: Layer;
   selected: boolean;
-  onSelect: () => void;
+  depth: number;
+  onSelect: (mode: "replace" | "toggle" | "range") => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(layer.name);
@@ -1224,7 +1669,9 @@ function TimelineLayerName({
     <button
       type="button"
       title="单击选择 · 双击重命名"
-      onClick={onSelect}
+      onClick={(event) =>
+        onSelect(event.shiftKey ? "range" : event.ctrlKey || event.metaKey ? "toggle" : "replace")
+      }
       onDoubleClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -1233,6 +1680,7 @@ function TimelineLayerName({
         setEditing(true);
       }}
       className={`min-w-0 flex-1 truncate text-left text-xs font-medium ${selected ? "text-primary" : "text-fg"}`}
+      style={{ paddingLeft: depth * 10 }}
     >
       {layer.name}
     </button>
@@ -1265,12 +1713,15 @@ function Ruler({
   const minorSteps =
     timeDisplayMode === "frames"
       ? [1, 2, 5, 10, 15, 20, 25, 30, 50, 75, 100, 150, 250, 500]
-      : [...new Set(baseSteps.slice(0, 6).map((step) => Math.max(1, Math.round((step * fps) / 30))))].sort(
-          (a, b) => a - b,
-        );
+      : [
+          ...new Set(
+            baseSteps.slice(0, 6).map((step) => Math.max(1, Math.round((step * fps) / 30))),
+          ),
+        ].sort((a, b) => a - b);
   const minorStep =
-    minorSteps.find((step) => step <= majorStep && majorStep % step === 0 && step * pxPerFrame >= 6) ??
-    majorStep;
+    minorSteps.find(
+      (step) => step <= majorStep && majorStep % step === 0 && step * pxPerFrame >= 6,
+    ) ?? majorStep;
   const endpointRemainder = lastFrame % majorStep;
   const labelEndpoint = endpointRemainder === 0 || endpointRemainder * pxPerFrame >= 40;
   const frames: number[] = [];
@@ -1307,6 +1758,148 @@ function Ruler({
         );
       })}
     </div>
+  );
+}
+
+function PathTrack({
+  layer,
+  width,
+  px,
+  labelWidth,
+  fps,
+  timeDisplayMode,
+}: {
+  layer: Layer;
+  width: number;
+  px: number;
+  labelWidth: number;
+  fps: number;
+  timeDisplayMode: TimeDisplayMode;
+}) {
+  const duration = useDoc((state) => state.duration);
+  const selected = useDoc((state) => state.selectedPathKey);
+  const selectPathKey = useDoc((state) => state.selectPathKey);
+  const movePathKey = useDoc((state) => state.movePathKey);
+  const setTime = useDoc((state) => state.setTime);
+  const addPathKey = useDoc((state) => state.addPathKey);
+  const keys = [...(layer.pathKeys ?? [])].sort((a, b) => a.t - b.t);
+  const clip = layerClipRange(layer, duration, fps);
+  const growth = layer.pathGrowth;
+  const growthStart = clip.inPoint + Math.max(0, growth?.delay ?? 0);
+  const growthEnd = Math.min(clip.outPoint, growthStart + Math.max(1 / fps, growth?.duration ?? 1));
+  const growthWidth = Math.max(0, (growthEnd - growthStart) * px);
+
+  return (
+    <div className="flex h-8 border-b border-border/70">
+      <div
+        data-label
+        className="sticky left-0 z-10 flex shrink-0 items-center gap-1 border-r border-border bg-surface px-1.5"
+        style={{ width: labelWidth }}
+      >
+        <span className="w-11 shrink-0 text-[11px] text-muted">路径</span>
+        <span className="ml-auto pr-2 font-mono text-[9px] text-muted">{keys.length} K</span>
+      </div>
+      <div
+        data-track-area
+        className="timeline-track-grid relative h-full"
+        style={{ width, backgroundSize: `${px}px 100%` }}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          const rect = event.currentTarget.getBoundingClientRect();
+          setTime(xToTime(event.clientX - rect.left, px, duration, fps));
+          addPathKey(layer.id);
+        }}
+      >
+        {growth?.enabled && growthWidth > 0 && (
+          <div
+            aria-hidden="true"
+            title={growth.direction === "both" ? "路径两端向中间生长" : "路径从起点生长"}
+            className="pointer-events-none absolute top-2.5 h-3 rounded border border-primary/35 bg-primary/15"
+            style={{ left: growthStart * px, width: growthWidth }}
+          />
+        )}
+        {keys.map((key) => (
+          <PathKeyMarker
+            key={key.id}
+            layerId={layer.id}
+            frame={key}
+            px={px}
+            fps={fps}
+            duration={duration}
+            timeDisplayMode={timeDisplayMode}
+            selected={selected?.layerId === layer.id && selected.id === key.id}
+            onSelect={() => selectPathKey({ layerId: layer.id, id: key.id })}
+            onMove={(time) => movePathKey(layer.id, key.id, time)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PathKeyMarker({
+  layerId,
+  frame,
+  px,
+  fps,
+  duration,
+  timeDisplayMode,
+  selected,
+  onSelect,
+  onMove,
+}: {
+  layerId: string;
+  frame: PathKeyframe;
+  px: number;
+  fps: number;
+  duration: number;
+  timeDisplayMode: TimeDisplayMode;
+  selected: boolean;
+  onSelect: () => void;
+  onMove: (time: number) => void;
+}) {
+  const drag = useRef<{ pointerId: number; x: number; time: number } | null>(null);
+  return (
+    <button
+      type="button"
+      data-key
+      data-path-key-id={frame.id}
+      data-layer-id={layerId}
+      aria-label={`路径关键帧 · ${frame.points.length} 个锚点 @ ${formatTimelineTime(frame.t, fps, timeDisplayMode)}`}
+      title={`路径 · ${formatTimelineTime(frame.t, fps, timeDisplayMode)} · ${frame.interp} · 拖动移动`}
+      className={`tl-key interp-${frame.interp} ${selected ? "is-selected" : ""}`}
+      style={{ left: timeToX(frame.t, px, fps) }}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        drag.current = { pointerId: event.pointerId, x: event.clientX, time: frame.t };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        onSelect();
+      }}
+      onPointerMove={(event) => {
+        const start = drag.current;
+        if (!start || start.pointerId !== event.pointerId) return;
+        const delta = (event.clientX - start.x) / Math.max(1, px);
+        if (Math.abs(delta) >= 0.5 / fps) onMove(snapTime(start.time + delta, duration, fps));
+      }}
+      onPointerUp={(event) => {
+        if (drag.current?.pointerId === event.pointerId) drag.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId))
+          event.currentTarget.releasePointerCapture(event.pointerId);
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        onMove(frame.t + (event.key === "ArrowLeft" ? -1 : 1) / fps);
+      }}
+    />
   );
 }
 
@@ -1441,8 +2034,12 @@ function VectorTrack({
   const secondary: PropKey = vector === "position" ? "y" : "scaleY";
   const title = vector === "position" ? "位置" : "缩放";
   const layer = useDoc((state) => state.layers.find((item) => item.id === layerId));
-  const primaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[primary] ?? []);
-  const secondaryTrack = useDoc((state) => state.layers.find((item) => item.id === layerId)?.tracks[secondary] ?? []);
+  const primaryTrack = useDoc(
+    (state) => state.layers.find((item) => item.id === layerId)?.tracks[primary] ?? [],
+  );
+  const secondaryTrack = useDoc(
+    (state) => state.layers.find((item) => item.id === layerId)?.tracks[secondary] ?? [],
+  );
   const time = useDoc((state) => state.time);
   const fps = useDoc((state) => state.fps);
 
@@ -1479,8 +2076,7 @@ function VectorTrack({
         nextPrimary = Math.min(10, Math.max(0.01, value * ratio));
       }
     }
-    const forceKey =
-      state.autoKey || current.armed[primary] || current.armed[secondary];
+    const forceKey = state.autoKey || current.armed[primary] || current.armed[secondary];
     state.setDisplayed(layerId, primary, nextPrimary, forceKey);
     state.setDisplayed(layerId, secondary, nextSecondary, forceKey);
   };
@@ -1491,7 +2087,12 @@ function VectorTrack({
     const current = state.layers.find((item) => item.id === layerId);
     if (!current) return;
     state.setDisplayed(layerId, primary, displayed(current, primary, targetTime, state.fps), true);
-    state.setDisplayed(layerId, secondary, displayed(current, secondary, targetTime, state.fps), true);
+    state.setDisplayed(
+      layerId,
+      secondary,
+      displayed(current, secondary, targetTime, state.fps),
+      true,
+    );
   };
 
   return (
@@ -1501,7 +2102,9 @@ function VectorTrack({
         className="sticky left-0 z-10 flex shrink-0 items-center gap-0.5 border-r border-border bg-surface px-1"
         style={{ width: labelWidth }}
       >
-        <span className={`w-8 shrink-0 text-[10px] ${layer?.armed[primary] || layer?.armed[secondary] ? "text-fg" : "text-muted"}`}>
+        <span
+          className={`w-8 shrink-0 text-[10px] ${layer?.armed[primary] || layer?.armed[secondary] ? "text-fg" : "text-muted"}`}
+        >
           {title}
         </span>
         <VectorKeyNav layerId={layerId} primary={primary} secondary={secondary} title={title} />
@@ -1512,11 +2115,19 @@ function VectorTrack({
               type="button"
               aria-label={layer?.scaleLinked !== false ? "解锁缩放比例" : "锁定缩放比例"}
               aria-pressed={layer?.scaleLinked !== false}
-              title={layer?.scaleLinked !== false ? "缩放比例已锁定，点击解锁" : "缩放比例未锁定，点击锁定"}
+              title={
+                layer?.scaleLinked !== false
+                  ? "缩放比例已锁定，点击解锁"
+                  : "缩放比例未锁定，点击锁定"
+              }
               onClick={() => useDoc.getState().toggleScaleLinked(layerId)}
               className={`grid size-5 shrink-0 place-items-center rounded ${layer?.scaleLinked !== false ? "text-primary" : "text-muted hover:text-fg"}`}
             >
-              {layer?.scaleLinked !== false ? <LockKeyhole className="size-3" /> : <LockKeyholeOpen className="size-3" />}
+              {layer?.scaleLinked !== false ? (
+                <LockKeyhole className="size-3" />
+              ) : (
+                <LockKeyholeOpen className="size-3" />
+              )}
             </button>
           )}
           <AxisScrub axis="Y" prop={secondary} layer={layer} time={time} onChange={changeValue} />
@@ -1547,52 +2158,58 @@ function VectorTrack({
           }
         }}
       >
-        {[...markers.values()].sort((a, b) => a.t - b.t).map((marker) => {
-          const markerKeys: SelectedKey[] = [
-            ...(marker.primary ? [{ layerId, prop: primary, id: marker.primary.id }] : []),
-            ...(marker.secondary ? [{ layerId, prop: secondary, id: marker.secondary.id }] : []),
-          ];
-          const active = markerKeys.some((key) =>
-            selected.some(
-              (item) => item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
-            ),
-          );
-          const markerValue = (prop: PropKey, key: Keyframe | undefined) => {
-            if (!layer) return 0;
-            if (!key) return displayed(layer, prop, marker.t, fps);
-            if (vector === "position" && (prop === "x" || prop === "y")) {
-              return (prop === "x" ? layer.x : layer.y) + key.v;
-            }
-            return key.v;
-          };
-          const primaryValue = formatKeyValue(primary, markerValue(primary, marker.primary));
-          const secondaryValue = formatKeyValue(secondary, markerValue(secondary, marker.secondary));
-          const interpolation = combinedInterpolation(marker.primary, marker.secondary);
-          return (
-            <button
-              key={`${marker.t}:${marker.primary?.id ?? ""}:${marker.secondary?.id ?? ""}`}
-              type="button"
-              data-key
-              data-key-pair="true"
-              data-pair-primary-id={marker.primary?.id}
-              data-pair-secondary-id={marker.secondary?.id}
-              data-pair-secondary-prop={secondary}
-              data-key-id={marker.primary?.id ?? marker.secondary?.id}
-              data-layer-id={layerId}
-              data-prop={primary}
-              aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${formatTimelineTime(marker.t, fps, timeDisplayMode)}`}
-              title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${formatTimelineTime(marker.t, fps, timeDisplayMode)} · ${interpolation}`}
-              className={`tl-key interp-${interpolation} ${active ? "is-selected" : ""}`}
-              style={{ left: timeToX(marker.t, px, fps) }}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onContextMenu(markerKeys, event.clientX, event.clientY);
-              }}
-              onPointerDown={(event) => onBeginMove(event, marker.t, markerKeys)}
-            />
-          );
-        })}
+        {[...markers.values()]
+          .sort((a, b) => a.t - b.t)
+          .map((marker) => {
+            const markerKeys: SelectedKey[] = [
+              ...(marker.primary ? [{ layerId, prop: primary, id: marker.primary.id }] : []),
+              ...(marker.secondary ? [{ layerId, prop: secondary, id: marker.secondary.id }] : []),
+            ];
+            const active = markerKeys.some((key) =>
+              selected.some(
+                (item) =>
+                  item.layerId === key.layerId && item.prop === key.prop && item.id === key.id,
+              ),
+            );
+            const markerValue = (prop: PropKey, key: Keyframe | undefined) => {
+              if (!layer) return 0;
+              if (!key) return displayed(layer, prop, marker.t, fps);
+              if (vector === "position" && (prop === "x" || prop === "y")) {
+                return (prop === "x" ? layer.x : layer.y) + key.v;
+              }
+              return key.v;
+            };
+            const primaryValue = formatKeyValue(primary, markerValue(primary, marker.primary));
+            const secondaryValue = formatKeyValue(
+              secondary,
+              markerValue(secondary, marker.secondary),
+            );
+            const interpolation = combinedInterpolation(marker.primary, marker.secondary);
+            return (
+              <button
+                key={`${marker.t}:${marker.primary?.id ?? ""}:${marker.secondary?.id ?? ""}`}
+                type="button"
+                data-key
+                data-key-pair="true"
+                data-pair-primary-id={marker.primary?.id}
+                data-pair-secondary-id={marker.secondary?.id}
+                data-pair-secondary-prop={secondary}
+                data-key-id={marker.primary?.id ?? marker.secondary?.id}
+                data-layer-id={layerId}
+                data-prop={primary}
+                aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${formatTimelineTime(marker.t, fps, timeDisplayMode)}`}
+                title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${formatTimelineTime(marker.t, fps, timeDisplayMode)} · ${interpolation}`}
+                className={`tl-key interp-${interpolation} ${active ? "is-selected" : ""}`}
+                style={{ left: timeToX(marker.t, px, fps) }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onContextMenu(markerKeys, event.clientX, event.clientY);
+                }}
+                onPointerDown={(event) => onBeginMove(event, marker.t, markerKeys)}
+              />
+            );
+          })}
       </div>
     </div>
   );
@@ -1657,10 +2274,13 @@ function VectorKeyNav({
     const state = useDoc.getState();
     const current = state.layers.find((item) => item.id === layerId);
     if (!current) return;
-    const times = [...new Set([...current.tracks[primary], ...current.tracks[secondary]].map((key) => key.t))].sort((a, b) => a - b);
-    const target = direction < 0
-      ? [...times].reverse().find((keyTime) => keyTime < state.time - 0.5 / state.fps)
-      : times.find((keyTime) => keyTime > state.time + 0.5 / state.fps);
+    const times = [
+      ...new Set([...current.tracks[primary], ...current.tracks[secondary]].map((key) => key.t)),
+    ].sort((a, b) => a - b);
+    const target =
+      direction < 0
+        ? [...times].reverse().find((keyTime) => keyTime < state.time - 0.5 / state.fps)
+        : times.find((keyTime) => keyTime > state.time + 0.5 / state.fps);
     if (target === undefined) return;
     state.setTime(target);
     const atTarget: SelectedKey[] = [
@@ -1668,7 +2288,13 @@ function VectorKeyNav({
         ? [{ layerId, prop: primary, id: keyNear(current.tracks[primary], target, state.fps)!.id }]
         : []),
       ...(keyNear(current.tracks[secondary], target, state.fps)
-        ? [{ layerId, prop: secondary, id: keyNear(current.tracks[secondary], target, state.fps)!.id }]
+        ? [
+            {
+              layerId,
+              prop: secondary,
+              id: keyNear(current.tracks[secondary], target, state.fps)!.id,
+            },
+          ]
         : []),
     ];
     state.selectKeys(atTarget);
@@ -1698,7 +2324,12 @@ function VectorKeyNav({
       >
         <Timer className="size-3" />
       </button>
-      <button type="button" aria-label="上一关键帧" onClick={() => step(-1)} className="grid size-5 place-items-center text-muted hover:text-fg">
+      <button
+        type="button"
+        aria-label="上一关键帧"
+        onClick={() => step(-1)}
+        className="grid size-5 place-items-center text-muted hover:text-fg"
+      >
         <ChevronLeft className="size-3" />
       </button>
       <button
@@ -1711,7 +2342,12 @@ function VectorKeyNav({
       >
         <span className={`k-diamond ${hitA || hitB ? "is-on" : ""}`} data-time={time} />
       </button>
-      <button type="button" aria-label="下一关键帧" onClick={() => step(1)} className="grid size-5 place-items-center text-muted hover:text-fg">
+      <button
+        type="button"
+        aria-label="下一关键帧"
+        onClick={() => step(1)}
+        className="grid size-5 place-items-center text-muted hover:text-fg"
+      >
         <ChevronRight className="size-3" />
       </button>
     </div>
@@ -1850,7 +2486,10 @@ function NumericScrub({
       type="button"
       aria-label={`${PROP_LABEL[prop]} ${shown}，拖动微调，双击输入`}
       title="按住拖动调整 · Shift 精细调整 · Alt 加速 · 双击输入"
-      className={className ?? "timeline-scrub-value ml-auto min-w-0 truncate rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums text-primary hover:bg-primary/10 focus-visible:outline-1 focus-visible:outline-primary"}
+      className={
+        className ??
+        "timeline-scrub-value ml-auto min-w-0 truncate rounded px-1 py-0.5 text-right font-mono text-[10px] tabular-nums text-primary hover:bg-primary/10 focus-visible:outline-1 focus-visible:outline-primary"
+      }
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         event.stopPropagation();
