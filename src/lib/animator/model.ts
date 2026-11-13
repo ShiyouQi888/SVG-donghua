@@ -196,10 +196,23 @@ export function snapTime(t: number, duration: number): number {
 }
 
 export function fmtTime(t: number): string {
-  const frames = Math.round(t * FPS);
-  const sec = Math.floor(frames / FPS);
-  const fr = frames % FPS;
-  return `${sec}:${String(fr).padStart(2, "0")}`;
+  const totalFrames = Math.max(0, Math.round(t * FPS));
+  const totalSeconds = Math.floor(totalFrames / FPS);
+  const frame = totalFrames % FPS;
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const hours = Math.floor(totalMinutes / 60);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frame)}`;
+}
+
+/** Compact ruler label in seconds:frames; use fmtTime for an unambiguous full timecode. */
+export function fmtRulerTime(t: number): string {
+  const totalFrames = Math.max(0, Math.round(t * FPS));
+  const seconds = Math.floor(totalFrames / FPS) % 60;
+  const frame = totalFrames % FPS;
+  return `${String(seconds).padStart(2, "0")}:${String(frame).padStart(2, "0")}`;
 }
 
 export function sample(track: Keyframe[], t: number, fallback: number, color = false): number {

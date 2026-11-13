@@ -38,6 +38,7 @@ import {
   STYLE_PROPS,
   colorToNumber,
   displayed,
+  fmtRulerTime,
   fmtTime,
   keyNear,
   numberToColor,
@@ -100,7 +101,24 @@ type MarqueeState = {
 };
 
 type KeyframeMenuState = { x: number; y: number };
-type TimelineKeyDrag = { pointerId: number; startTime: number; keys: KeyframeMove[] };
+type TimelineKeyDrag = {
+  pointerId: number;
+  startTime: number;
+  pointerOffsetX: number;
+  keys: KeyframeMove[];
+};
+
+function frameToX(frame: number, pxPerSecond: number): number {
+  return (frame * pxPerSecond) / FPS;
+}
+
+function timeToX(time: number, pxPerSecond: number): number {
+  return frameToX(Math.round(time * FPS), pxPerSecond);
+}
+
+function xToTime(x: number, pxPerSecond: number, duration: number): number {
+  return snapTime(x / pxPerSecond, duration);
+}
 
 export function Timeline() {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -230,8 +248,9 @@ export function Timeline() {
   }, [copySelectedKeys, pasteCopiedKeys]);
 
   const labelWidth = viewportWidth > 0 && viewportWidth < 640 ? 226 : LABEL_W;
-  const fittedPx = Math.round(
-    Math.min(480, Math.max(40, (viewportWidth - labelWidth - 64) / Math.max(duration, 0.5))),
+  const fittedPx = Math.min(
+    480,
+    Math.max(40, (viewportWidth - labelWidth - 64) / Math.max(duration, 0.5)),
   );
   const timelinePx = fitWidth && viewportWidth > labelWidth ? fittedPx : px;
   const width = Math.max(duration * timelinePx + 64, viewportWidth - labelWidth, 320);
@@ -271,7 +290,7 @@ export function Timeline() {
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
     const x = clientX - rect.left + el.scrollLeft - labelWidth;
-    return snapTime(x / timelinePx, duration);
+    return xToTime(x, timelinePx, duration);
   }
 
   function beginKeyMove(
@@ -309,7 +328,10 @@ export function Timeline() {
       return origin ? [{ ...key, t: origin.t }] : [];
     });
     if (keys.length === 0) return;
-    keyDrag.current = { pointerId: event.pointerId, startTime, keys };
+    const rect = scrollRef.current.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth;
+    const pointerOffsetX = pointerX - timeToX(startTime, timelinePx);
+    keyDrag.current = { pointerId: event.pointerId, startTime, pointerOffsetX, keys };
     useDoc.getState().beginUndoGroup();
     scrollRef.current.setPointerCapture(event.pointerId);
   }
@@ -385,7 +407,10 @@ export function Timeline() {
         >
           停
         </button>
-        <span className="font-mono text-xs text-muted">
+        <span
+          aria-label={`当前时间 ${fmtTime(time)}，总时长 ${fmtTime(duration)}，${FPS}fps`}
+          className="font-mono text-xs text-muted tabular-nums"
+        >
           {fmtTime(time)} / {fmtTime(duration)} · {FPS}fps
         </span>
         <button
@@ -549,8 +574,9 @@ export function Timeline() {
             scrollRef.current?.hasPointerCapture(event.pointerId)
           ) {
             const rect = scrollRef.current.getBoundingClientRect();
-            const x = event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth;
-            const targetTime = snapTime(x / timelinePx, useDoc.getState().duration);
+            const x =
+              event.clientX - rect.left + scrollRef.current.scrollLeft - labelWidth - drag.pointerOffsetX;
+            const targetTime = xToTime(x, timelinePx, useDoc.getState().duration);
             useDoc.getState().moveKeys(drag.keys, targetTime - drag.startTime);
             return;
           }
@@ -868,7 +894,7 @@ export function Timeline() {
 
           <div
             className="pointer-events-none absolute bottom-0 z-30 w-px bg-play"
-            style={{ left: labelWidth + time * timelinePx, top: 0 }}
+            style={{ left: labelWidth + timeToX(time, timelinePx), top: 0 }}
           >
             <div className="absolute -left-1.5 top-0 size-0 border-x-[6px] border-t-8 border-x-transparent border-t-play" />
           </div>
@@ -1035,21 +1061,48 @@ function TimelineLayerName({
 }
 
 function Ruler({ duration, px, width }: { duration: number; px: number; width: number }) {
-  const ticks: number[] = [];
-  const step = px >= 140 ? 0.5 : 1;
-  for (let t = 0; t <= duration + 0.001; t += step) ticks.push(Number(t.toFixed(2)));
+  const lastFrame = Math.max(0, Math.round(duration * FPS));
+  const pxPerFrame = px / FPS;
+  const majorSteps = [1, 2, 3, 6, 15, 30, 60, 90, 150, 300, 600, 900];
+  const majorStep = majorSteps.find((step) => step * pxPerFrame >= 40) ?? majorSteps.at(-1)!;
+  const minorSteps = [1, 2, 3, 6, 15, 30];
+  const minorStep =
+    minorSteps.find((step) => step <= majorStep && majorStep % step === 0 && step * pxPerFrame >= 6) ??
+    majorStep;
+  const endpointRemainder = lastFrame % majorStep;
+  const labelEndpoint = endpointRemainder === 0 || endpointRemainder * pxPerFrame >= 40;
+  const frames: number[] = [];
+  for (let frame = 0; frame <= lastFrame; frame += minorStep) frames.push(frame);
+  if (frames.at(-1) !== lastFrame) frames.push(lastFrame);
+
   return (
     <div className="relative h-full" style={{ width }}>
-      {ticks.map((t) => (
-        <span
-          key={t}
-          className="absolute top-0 h-full font-mono text-xs text-muted"
-          style={{ left: t * px }}
-        >
-          <span className="absolute bottom-0 left-0 h-2 w-px bg-border" />
-          <span className="absolute left-1 top-0.5">{fmtTime(t)}</span>
-        </span>
-      ))}
+      {frames.map((frame) => {
+        const major = frame % majorStep === 0;
+        const label = major || (frame === lastFrame && labelEndpoint);
+        const time = frame / FPS;
+        return (
+          <span
+            key={frame}
+            data-ruler-frame={frame}
+            data-ruler-major={major ? "true" : "false"}
+            className="absolute top-0 h-full"
+            style={{ left: frameToX(frame, px) }}
+          >
+            <span
+              className={`absolute bottom-0 left-0 w-px ${major ? "h-2 bg-border" : "h-1 bg-border/60"}`}
+            />
+            {label && (
+              <span
+                title={fmtTime(time)}
+                className="absolute left-1 top-0.5 whitespace-nowrap font-mono text-xs text-muted"
+              >
+                {fmtRulerTime(time)}
+              </span>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -1124,7 +1177,7 @@ function PropTrack({
           }
           const rect = scroller.getBoundingClientRect();
           const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
-          useDoc.getState().setTime(snapTime(x / px, duration));
+          useDoc.getState().setTime(xToTime(x, px, duration));
           toggleKey(layerId, prop);
         }}
       >
@@ -1139,7 +1192,7 @@ function PropTrack({
             aria-label={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t)}`}
             title={`${PROP_LABEL[prop]} ${formatKeyValue(prop, kf.v)} @ ${fmtTime(kf.t)} · ${kf.interp}`}
             className={`tl-key interp-${kf.interp} ${selected.includes(kf.id) || live?.id === kf.id ? "is-selected" : ""}`}
-            style={{ left: kf.t * px }}
+            style={{ left: timeToX(kf.t, px) }}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -1270,7 +1323,7 @@ function VectorTrack({
           if (!scroller) return;
           const rect = scroller.getBoundingClientRect();
           const x = event.clientX - rect.left + scroller.scrollLeft - labelWidth;
-          const targetTime = snapTime(x / px, useDoc.getState().duration);
+          const targetTime = xToTime(x, px, useDoc.getState().duration);
           const state = useDoc.getState();
           const current = state.layers.find((item) => item.id === layerId);
           if (!current) return;
@@ -1321,7 +1374,7 @@ function VectorTrack({
               aria-label={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t)}`}
               title={`${title} X ${primaryValue}, Y ${secondaryValue} @ ${fmtTime(marker.t)} · ${interpolation}`}
               className={`tl-key interp-${interpolation} ${active ? "is-selected" : ""}`}
-              style={{ left: marker.t * px }}
+              style={{ left: timeToX(marker.t, px) }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();

@@ -11,7 +11,7 @@ import {
   Undo2,
   Upload,
 } from "lucide-react";
-import { type Tool } from "@/lib/animator/model";
+import { FPS, snapTime, type Tool } from "@/lib/animator/model";
 import { getProjectAsset, projectAssetImageSource } from "@/lib/animator/project-assets";
 import { loadSnapshot, saveSnapshot, useDoc } from "@/lib/animator/store";
 import { Stage } from "./Stage";
@@ -149,22 +149,37 @@ export function Editor() {
   useEffect(() => {
     let raf = 0;
     let last = performance.now();
+    let wasPlaying = false;
+    let frameAccumulator = 0;
     const loop = (now: number) => {
-      const dt = Math.min(0.05, (now - last) / 1000);
+      const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
       last = now;
-      const state = useDoc.getState();
+      let state = useDoc.getState();
       if (state.playing) {
-        const next = state.time + dt;
-        if (next >= state.duration) {
-          if (state.loop) state.setTime(0);
-          else {
-            state.setTime(state.duration);
-            state.togglePlay();
-          }
-        } else {
-          state.setTime(next);
+        if (!wasPlaying) {
+          frameAccumulator = 0;
+          state.setTime(snapTime(state.time, state.duration));
         }
+        frameAccumulator += dt;
+        const framesToAdvance = Math.floor(frameAccumulator * FPS + 1e-6);
+        if (framesToAdvance > 0) {
+          frameAccumulator -= framesToAdvance / FPS;
+          state = useDoc.getState();
+          const next = state.time + framesToAdvance / FPS;
+          if (next >= state.duration) {
+            if (state.loop) state.setTime(0);
+            else {
+              state.setTime(state.duration);
+              state.togglePlay();
+            }
+          } else {
+            state.setTime(next);
+          }
+        }
+      } else {
+        frameAccumulator = 0;
       }
+      wasPlaying = useDoc.getState().playing;
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
