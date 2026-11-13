@@ -27,6 +27,8 @@ import {
   Repeat,
   ScanLine,
   Spline,
+  StepBack,
+  StepForward,
   Trash2,
   Timer,
   Waves,
@@ -209,6 +211,11 @@ export function Timeline() {
   const motionBlurStrength = useDoc((s) => s.motionBlurStrength);
   const setTime = useDoc((s) => s.setTime);
   const togglePlay = useDoc((s) => s.togglePlay);
+  const stepFrame = (direction: -1 | 1) => {
+    const state = useDoc.getState();
+    if (state.playing) state.togglePlay();
+    state.setTime(snapTime(state.time + direction / state.fps, state.duration, state.fps));
+  };
   const toggleLoop = useDoc((s) => s.toggleLoop);
   const stop = useDoc((s) => s.stop);
   const setDuration = useDoc((s) => s.setDuration);
@@ -425,23 +432,7 @@ export function Timeline() {
           }
         }}
       />
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
-        <button
-          type="button"
-          onClick={togglePlay}
-          className="grid size-9 place-items-center rounded-full bg-primary text-bg"
-          aria-label={playing ? "暂停" : "播放"}
-        >
-          {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
-        </button>
-        <button
-          type="button"
-          onClick={stop}
-          className="rounded-md border border-border px-2 py-1 text-xs"
-          aria-label="停止"
-        >
-          停
-        </button>
+      <div className="relative flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
         <span
           aria-label={`当前时间 ${formatTimelineTime(time, fps, timeDisplayMode)}，总时长 ${formatTimelineTime(duration, fps, timeDisplayMode)}，${fps}fps`}
           className="font-mono text-xs text-muted tabular-nums"
@@ -515,6 +506,49 @@ export function Timeline() {
             />
             <span className="w-3 text-right font-mono text-fg">{motionBlurStrength}</span>
           </label>
+        </div>
+        <div
+          role="group"
+          aria-label="播放控制"
+          className="mx-auto flex h-9 shrink-0 items-center gap-1 rounded-lg border border-border bg-surface-2/70 px-1.5 shadow-sm 2xl:absolute 2xl:left-1/2 2xl:top-1/2 2xl:z-20 2xl:-translate-x-1/2 2xl:-translate-y-1/2"
+        >
+          <button
+            type="button"
+            onClick={() => stepFrame(-1)}
+            className="grid size-8 place-items-center rounded-md text-muted transition-colors hover:bg-surface hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
+            aria-label="上一帧"
+            title="上一帧 · ←"
+          >
+            <StepBack className="size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={togglePlay}
+            className="grid size-9 place-items-center rounded-full bg-primary text-bg transition-colors hover:brightness-110 focus-visible:outline-2 focus-visible:outline-primary"
+            aria-label={playing ? "暂停" : "播放"}
+            title={playing ? "暂停 · 空格" : "播放 · 空格"}
+          >
+            {playing ? <Pause className="size-4" /> : <Play className="size-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => stepFrame(1)}
+            className="grid size-8 place-items-center rounded-md text-muted transition-colors hover:bg-surface hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
+            aria-label="下一帧"
+            title="下一帧 · →"
+          >
+            <StepForward className="size-4" />
+          </button>
+          <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={stop}
+            className="rounded-md px-2 py-1 text-xs text-muted transition-colors hover:bg-surface hover:text-fg focus-visible:outline-2 focus-visible:outline-primary"
+            aria-label="停止并回到开始"
+            title="停止并回到开始"
+          >
+            停
+          </button>
         </div>
         <div className="ml-auto flex items-center gap-3">
           <label className="flex items-center gap-1 text-xs text-muted">
